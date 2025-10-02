@@ -1,0 +1,32 @@
+{
+  "project": { "id": "SRZU-DEMO", "name": "SRZU Legend & Labels Demo" },
+  "crs": { "name": "LOCAL", "unit": "m" },
+  "scales_allowed": [500],
+  "operation": "CLARIFY",
+  "entities": {
+    "parcels": [ { "id": "p1", "status": "NEW", "is_main": true, "cadastral_number": "69:18:0141401:27", "boundary_status": "NEW" } ],
+    "boundary_points": [
+      { "id": "bp1", "x": 0,   "y": 0,   "kind": "EXISTING" },
+      { "id": "bp2", "x": 180, "y": 0,   "kind": "EXISTING" },
+      { "id": "bp3", "x": 220, "y": 60,  "kind": "CREATED"  },
+      { "id": "bp4", "x": 160, "y": 200, "kind": "CREATED"  },
+      { "id": "bp5", "x": 40,  "y": 220, "kind": "CREATED"  },
+      { "id": "bp6", "x": -20, "y": 60,  "kind": "CREATED"  }
+    ],
+    "stations": [ { "id": "H2", "x": 280, "y": 20, "name": "ГГС-2", "kind": "GGS" } ],
+    "directions": [ { "from_station_id": "H2", "to_point_id": "bp4", "length_m_int": 190, "type": "DETERMINE" } ]
+  },
+  "srzu": {
+    "crs": { "name": "LOCAL", "unit": "m" },
+    "target_parcels": [ { "type": "Polygon", "coordinates": [[[0,0],[200,0],[220,60],[160,200],[40,220],[-20,60],[0,0]]], "properties": {"status": "NEW"} } ],
+    "adjacent_parcels": [ { "type": "Polygon", "coordinates": [[[240,-20],[400,20],[380,200],[260,180],[240,-20]]], "properties": {"status": "EXISTING", "color": "#808080"} } ],
+    "quarters": [ { "type": "LineString", "coordinates": [[-300,-300], [500,-300], [500,300], [-300,300], [-300,-300]], "properties": {"name": "69:18:0141401"} } ],
+    "admin_boundaries": [ { "type": "LineString", "coordinates": [[-500,0],[600,0]] } ],
+    "zones": [ { "type": "Polygon", "coordinates": [[[50,-50],[180,-40],[180,50],[50,50],[50,-50]]], "properties": {"name": "Охранная зона"} } ],
+    "labels": [
+      { "text": ":27", "x": 100, "y": 80 },
+      { "text": "69:18:0141401", "x": 0, "y": -300 },
+      { "text": "Охранная зона", "x": 60, "y": -40 }
+    ]
+  }
+}

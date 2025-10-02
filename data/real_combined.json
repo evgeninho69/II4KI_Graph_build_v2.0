@@ -1,0 +1,89 @@
+{
+  "project": {
+    "id": "REAL-TEST",
+    "name": "Real Data Test"
+  },
+  "crs": {
+    "name": "LOCAL",
+    "unit": "m"
+  },
+  "scales_allowed": [
+    500
+  ],
+  "operation": "CLARIFY",
+  "entities": {
+    "parcels": [
+      {
+        "id": "p1",
+        "status": "NEW",
+        "is_main": true,
+        "cadastral_number": "69:18:0141401:27",
+        "boundary_status": "NEW"
+      }
+    ],
+    "boundary_points": [
+      {
+        "id": "bp1",
+        "x": 1.0,
+        "y": 646019.37,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp2",
+        "x": 2.0,
+        "y": 646035.01,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp3",
+        "x": 3.0,
+        "y": 646030.18,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp4",
+        "x": 4.0,
+        "y": 646015.9,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp5",
+        "x": 5.0,
+        "y": 646016.18,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp6",
+        "x": 6.0,
+        "y": 646014.25,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp7",
+        "x": 7.0,
+        "y": 646014.63,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp8",
+        "x": 8.0,
+        "y": 646014.95,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp9",
+        "x": 9.0,
+        "y": 646017.09,
+        "kind": "CREATED"
+      },
+      {
+        "id": "bp10",
+        "x": 10.0,
+        "y": 646019.27,
+        "kind": "CREATED"
+      }
+    ],
+    "stations": [],
+    "directions": []
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "project": { "id": "EX-SS01", "name": "Screenshots Example" },
+  "crs": { "name": "LOCAL", "unit": "m" },
+  "scales_allowed": [500],
+  "operation": "CLARIFY",
+  "entities": {
+    "parcels": [
+      { "id": "p_target", "status": "NEW", "is_main": true, "cadastral_number": "69:18:0141401:27", "boundary_status": "NEW" }
+    ],
+    "boundary_points": [
+      { "id": "bp1", "x": 0,   "y": 0,   "kind": "EXISTING" },
+      { "id": "bp2", "x": 180, "y": 0,   "kind": "EXISTING" },
+      { "id": "bp3", "x": 220, "y": 60,  "kind": "CREATED"  },
+      { "id": "bp4", "x": 160, "y": 200, "kind": "CREATED"  },
+      { "id": "bp5", "x": 40,  "y": 220, "kind": "CREATED"  },
+      { "id": "bp6", "x": -20, "y": 60,  "kind": "CREATED"  }
+    ],
+    "stations": [
+      { "id": "H1", "x": -150, "y":  50, "name": "ГГС-1", "kind": "GGS" },
+      { "id": "H2", "x":  280, "y":  20, "name": "ГГС-2", "kind": "GGS" },
+      { "id": "H3", "x":  100, "y": -120, "name": "ГГС-3", "kind": "GGS" }
+    ],
+    "directions": [
+      { "from_station_id": "H2", "to_point_id": "bp3", "length_m_int": 120, "type": "CREATE" },
+      { "from_station_id": "H2", "to_point_id": "bp4", "length_m_int": 190, "type": "DETERMINE" },
+      { "from_station_id": "H2", "to_point_id": "bp5", "length_m_int": 260, "type": "DETERMINE" }
+    ]
+  }
+}

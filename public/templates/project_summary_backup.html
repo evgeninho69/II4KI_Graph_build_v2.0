@@ -1,0 +1,137 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Межевой план — сводка</title>
+  <style>
+    body{font:14px/1.45 Arial, sans-serif; margin:16px}
+    h1{margin:0 0 10px}
+    .toolbar{display:flex;align-items:center;gap:12px;margin:10px 0}
+    /* Полноэкранный просмотр блоками — по одному на всю ширину */
+    .grid{display:block}
+    .card{border:1px solid #ccc; border-radius:6px; overflow:hidden; background:#fff; margin-bottom:18px}
+    .card header{padding:8px 10px; font-weight:700; background:#f7f7f7; display:flex; align-items:center; justify-content:space-between}
+    .card .actions{display:flex; gap:8px}
+    .card .actions a, .card .actions button{font-size:12px; padding:4px 8px}
+    /* высота фрейма под размер окна (минус отступы/хедер/панель) */
+    iframe{width:100%; height:calc(100vh - 180px); border:0; background:#fff}
+    .muted{color:#777}
+  </style>
+</head>
+<body>
+  <h1>Межевой план — сводка</h1>
+  <div class="toolbar">
+    <label><input id="auto" type="checkbox" checked> Авто‑обновление (5 сек)</label>
+    <button id="refresh">Обновить сейчас</button>
+    <span class="muted" id="status"></span>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <header>
+        <span>📋 Схема расположения</span>
+        <div class="actions">
+          <a id="open-scheme" href="SRZU.html" target="_blank">Открыть</a>
+          <button data-target="scheme">Обновить</button>
+        </div>
+      </header>
+      <iframe id="frame-scheme" src="SRZU.html"></iframe>
+    </div>
+    <div class="card">
+      <header>
+        <span>📐 Схема геодезических построений</span>
+        <div class="actions">
+          <a id="open-sgp" href="SGP.html" target="_blank">Открыть</a>
+          <button data-target="sgp">Обновить</button>
+        </div>
+      </header>
+      <iframe id="frame-sgp" src="SGP.html"></iframe>
+    </div>
+    <div class="card">
+      <header>
+        <span>🎨 Чертеж земельных участков и их частей</span>
+        <div class="actions">
+          <a id="open-drawing" href="#" target="_blank">Открыть первый лист</a>
+          <button data-target="drawing">Обновить</button>
+        </div>
+      </header>
+      <div id="drawing-list"></div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      const files = {
+        scheme:  { frame: document.getElementById('frame-scheme'),  link: document.getElementById('open-scheme'),  path: 'SRZU.html' },
+        sgp:     { frame: document.getElementById('frame-sgp'),     link: document.getElementById('open-sgp'),     path: 'SGP.html' }
+      };
+      let chPages = Array.isArray(window.__CH_LIST__) ? window.__CH_LIST__ : null;
+      const drawingList = document.getElementById('drawing-list');
+      const statusEl = document.getElementById('status');
+
+      function bust(url){
+        const sep = url.includes('?') ? '&' : '?';
+        return url + sep + 't=' + Date.now();
+      }
+      function refreshOne(key){
+        const item = files[key];
+        if(!item) return;
+        try{
+          item.frame.src = bust(item.path);
+          item.link.href = item.path;
+          statusEl.textContent = 'Обновлено: ' + new Date().toLocaleTimeString();
+        }catch(e){
+          statusEl.textContent = 'Ошибка обновления ' + key;
+        }
+
+      }
+      function refreshAll(){ Object.keys(files).forEach(refreshOne); renderCH(); }
+      async function fetchManifest(){
+        try{
+          const res = await fetch('manifest.json', {cache:'no-store'});
+          if(!res.ok) return;
+          const data = await res.json();
+          if(Array.isArray(data?.CH)) chPages = data.CH;
+        }catch(e){ /* ignore */ }
+      }
+      function renderCH(){
+        if(!chPages || chPages.length===0){ drawingList.innerHTML = '<div class="muted">Листы CH не найдены</div>'; return; }
+        drawingList.innerHTML = chPages.map((name, i)=>
+          `<div style="margin:10px 0">
+             <a href="${name}" target="_blank">Открыть CH лист ${i+1}</a>
+             <iframe src="${bust(name)}" style="width:100%; height:calc(100vh - 220px); border:0; background:#fff"></iframe>
+           </div>`
+        ).join('');
+        const first = chPages[0];
+        document.getElementById('open-drawing').href = first || '#';
+      }
+      // авто-подгон высоты при ресайзе окна
+      function fitHeights(){
+        const h = Math.max(320, window.innerHeight - 180);
+        Object.values(files).forEach(it=>{ it.frame.style.height = h + 'px'; });
+      }
+
+      document.getElementById('refresh').addEventListener('click', refreshAll);
+      document.querySelectorAll('button[data-target]').forEach(btn=>{
+        btn.addEventListener('click', ()=> refreshOne(btn.dataset.target));
+      });
+
+      // авто‑обновление
+      let timer = setInterval(refreshAll, 5000);
+      const auto = document.getElementById('auto');
+      auto.addEventListener('change', ()=>{
+        if(auto.checked){ timer = setInterval(refreshAll, 5000); refreshAll(); }
+        else { clearInterval(timer); }
+      });
+
+      // первичная загрузка
+      (async ()=>{ await fetchManifest(); refreshAll(); })();
+      fitHeights();
+      window.addEventListener('resize', fitHeights);
+    })();
+  </script>
+</body>
+</html>
+
+

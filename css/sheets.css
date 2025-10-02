@@ -1,0 +1,138 @@
+/* Базовые стили листа */
+:root{
+  --page-w: 210mm;
+  --page-h: 297mm;
+  --ml: 16.2mm;  /* левое поле (рабочая область) */
+  --mr: 9.8mm;   /* правое поле */
+  --mt: 11.7mm;  /* верхнее поле */
+  --mb: 9.6mm;   /* нижнее поле */
+  --legend-h: 40mm;
+  --header-h: 18mm;
+  --line: #000;
+  --line-width: 0.5mm;
+}
+html, body { height: 100%; background: #f3f3f3; }
+body { margin: 20px; font: 13px/1.35 "Times New Roman", Times, serif; color: #111; }
+
+.sheet {
+  width: var(--page-w); height: var(--page-h); background: #fff; margin: 0 auto;
+  box-shadow: 0 4px 24px rgba(0,0,0,.18); position: relative;
+}
+
+.header {
+  position: absolute; left: var(--ml); right: var(--mr); top: var(--mt); height: var(--header-h);
+  border: var(--line-width) solid var(--line); border-bottom: none; 
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 14pt;
+}
+
+.workarea {
+  position: absolute; left: var(--ml); right: var(--mr);
+  top: calc(var(--mt) + var(--header-h));
+  bottom: calc(var(--mb) + var(--legend-h));
+  border: var(--line-width) solid var(--line); background: #fff; overflow: hidden;
+}
+
+.scale {
+  position: absolute; left: var(--ml); right: var(--mr); 
+  bottom: calc(var(--mb) + var(--legend-h) + 6mm);
+  text-align: center; font-weight: 700; font-size: 12pt;
+}
+
+.legend {
+  position: absolute; left: var(--ml); right: var(--mr); bottom: var(--mb); height: var(--legend-h);
+  border: var(--line-width) solid var(--line); border-top: none;
+  display: flex; flex-direction: column; padding: 6mm 10mm; font-weight: 700; overflow-y: auto;
+}
+
+.legend strong {
+  display: block; margin-bottom: 4mm; font-size: 11pt;
+}
+
+.legend-items {
+  display: flex; flex-wrap: wrap; gap: 2mm 6mm;
+}
+
+/* Элементы легенды */
+.legend .legend-item { display: flex; align-items: center; gap: 8px; margin: 2px 12px 2px 0; }
+.legend .legend-symbol { width: 48px; height: 14px; display: flex; align-items: center; justify-content: center; }
+
+/* Образцы линий границ */
+.legend .legend-boundary-existing { width: 48px; height: 0; border-top: 2px solid #000; }
+.legend .legend-boundary-new { width: 48px; height: 0; border-top: 2px solid #f00; }
+.legend .legend-boundary-uncertain { width: 48px; height: 0; border-top: 2px dashed #000; }
+
+/* Точки */
+.legend .legend-point-new { width: 8px; height: 8px; border-radius: 50%; background: #f00; }
+.legend .legend-point-existing { width: 8px; height: 8px; border-radius: 50%; background: #000; }
+.legend .legend-point-removed { width: 8px; height: 8px; border-radius: 50%; background: #808080; }
+
+/* Пункт ОМС/ГГС (упрощённый символ) */
+.legend .legend-station { width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 12px solid #0077CC; }
+.legend .legend-ggs { width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 12px solid #0077CC; }
+.legend .legend-geodir-create { width: 48px; height: 0; border-top: 2px solid #0077CC; }
+
+/* SRZU-слои */
+.legend .legend-target { width: 48px; height: 0; border-top: 2px solid #ff0000; }
+.legend .legend-adjacent { width: 48px; height: 0; border-top: 2px solid #808080; }
+.legend .legend-quarters { width: 48px; height: 0; border-top: 3px solid #1E5AFF; }
+.legend .legend-admin { width: 48px; height: 0; border-top: 2px solid #000000; }
+.legend .legend-zone { width: 48px; height: 0; border-top: 2px solid #00AA00; }
+.legend .legend-label-quarter { color: #1E5AFF; font-weight: 700; }
+.legend .legend-label-parcel { color: #000000; }
+
+/* Направление от пункта ГГС/ОМС до точки - синяя стрелка */
+.legend .legend-geodir-determine {
+  width: 48px; height: 14px; background: #fff;
+  position: relative;
+  border: 1px solid #ddd;
+}
+.legend .legend-geodir-determine::before {
+  content: "";
+  position: absolute; top: 50%; left: 2px; width: 40px; height: 0;
+  border-top: 1px solid #0077CC;
+}
+.legend .legend-geodir-determine::after {
+  content: "→";
+  position: absolute; top: 50%; right: 2px; transform: translateY(-50%);
+  color: #0077CC; font-size: 12px; line-height: 1;
+}
+
+/* Значение расстояния - синий текст */
+.legend .legend-distance {
+  width: 48px; height: 14px; background: #fff;
+  position: relative;
+  border: 1px solid #ddd;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; color: #0077CC; font-family: "Times New Roman", serif;
+}
+.legend .legend-distance::before {
+  content: "482.80м";
+}
+
+/* Буферная зона - пунктирная синяя линия */
+.legend .legend-buffer-zone {
+  width: 48px; height: 14px; background: #fff;
+  position: relative;
+  border: 1px solid #ddd;
+  display: flex; align-items: center; justify-content: center;
+}
+.legend .legend-buffer-zone::before {
+  content: '';
+  width: 40px; height: 2px;
+  background: repeating-linear-gradient(
+    to right,
+    #1E5AFF 0px,
+    #1E5AFF 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  opacity: 0.7;
+}
+
+@media print {
+  body { background: #fff; margin: 0; box-shadow: none; }
+  .sheet { box-shadow: none; margin: 0; }
+}
+
+

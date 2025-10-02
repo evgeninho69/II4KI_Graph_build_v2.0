@@ -1,0 +1,17 @@
+[project]
+name = "ii4ki-graphics"
+version = "0.1.0"
+description = "HTML/SVG-first генератор графических разделов межевого плана"
+requires-python = ">=3.10"
+dependencies = [
+  "jinja2>=3.1.2",
+  "lxml>=5.2.0",
+  "shapely>=2.0.0",
+  "pytest>=8.0.0",
+  "pytest-regressions>=2.6.0"
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
