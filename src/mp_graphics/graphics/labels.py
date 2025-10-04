@@ -26,19 +26,24 @@ class ParcelLabelFormatter:
     def build_parcel_label(parcel: Dict[str, Any]) -> str:
         """Строит текст подписи участка.
 
-        Предпочтение:
-        - если есть `cadastral_number` с двоеточиями, берём последний блок и формируем ":NN"
-        - иначе пробуем `designation` (если уже содержит ведущий двоеточие, оставляем его)
-        - иначе возвращаем ":ЗУ"
+        Предпочтение (согласно пп. 78-79):
+        1. Если есть `designation` - используем его (уже применены правила операции)
+        2. Иначе если есть `cadastral_number` - извлекаем последний блок ":NN"
+        3. Иначе возвращаем ":ЗУ"
         """
-        cadnum = (parcel or {}).get("cadastral_number", "")
         designation = (parcel or {}).get("designation", "").strip()
+        
+        # Приоритет: designation (правильное обозначение по операции)
+        if designation:
+            return designation if designation.startswith(":") else f":{designation}"
+        
+        # Fallback: извлекаем из cadastral_number
+        cadnum = (parcel or {}).get("cadastral_number", "")
         if cadnum:
             last = cadnum.split(":")[-1] if ":" in cadnum else cadnum
             last = (last or "").strip()
             return f":{last}" if last else ":ЗУ"
-        if designation:
-            return designation if designation.startswith(":") else f":{designation}"
+        
         return ":ЗУ"
 
     # --- Формирование меток по §78–79 ---
@@ -152,6 +157,8 @@ class LegendBuilder:
             # Подписи
             "label-quarter": {"css": "legend-label-quarter", "text": "Номер кадастрового квартала"},
             "label-parcel": {"css": "legend-label-parcel", "text": "Номер земельного участка"},
+            "label-point-new": {"css": "legend-label-point-new", "text": "Номер образуемой точки"},
+            "label-point-existing": {"css": "legend-label-point-existing", "text": "Номер существующей точки"},
             # Дополнительные элементы для КПТ
             "contour-part": {"css": "legend-contour-part", "text": "Часть контура, образованного проекцией существующего наземного конструктивного элемента здания, сооружения, объекта незавершенного строительства"},
         }

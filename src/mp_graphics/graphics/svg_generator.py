@@ -170,6 +170,408 @@ class SVGGraphicsGenerator:
         
         return f'<text x="{x}" y="{y}" fill="{fill}" font-size="{font_sz}" font-family="{self.config.font_family}" text-anchor="{text_anchor}">{text}</text>'
 
+    def _find_best_leader_direction(self, point_x: float, point_y: float, 
+                                  existing_labels: List[Dict], polygon_points: List[Tuple[float, float]]) -> Tuple[float, float]:
+        """Находит оптимальное направление для выноски, избегая ближайшие надписи"""
+        # Направления для тестирования (8 основных направлений)
+        directions = [
+            (1, 0),   # Вправо
+            (0, -1),  # Вверх
+            (-1, 0),  # Влево
+            (0, 1),   # Вниз
+            (0.707, -0.707),  # Вправо-вверх
+            (-0.707, -0.707), # Влево-вверх
+            (-0.707, 0.707),  # Влево-вниз
+            (0.707, 0.707),   # Вправо-вниз
+        ]
+        
+        best_direction = (1, 0)  # По умолчанию вправо
+        max_min_distance = 0
+        
+        for dx, dy in directions:
+            # Нормализуем направление
+            length = (dx**2 + dy**2)**0.5
+            if length > 0:
+                dx_norm = dx / length
+                dy_norm = dy / length
+                
+                # Вычисляем минимальное расстояние до существующих надписей в этом направлении
+                min_distance = float('inf')
+                for label in existing_labels:
+                    label_x, label_y = label['x'], label['y']
+                    
+                    # Вектор от точки к надписи
+                    vec_x = label_x - point_x
+                    vec_y = label_y - point_y
+                    vec_length = (vec_x**2 + vec_y**2)**0.5
+                    
+                    if vec_length > 0:
+                        # Нормализуем вектор
+                        vec_x_norm = vec_x / vec_length
+                        vec_y_norm = vec_y / vec_length
+                        
+                        # Скалярное произведение для определения "похожести" направлений
+                        dot_product = dx_norm * vec_x_norm + dy_norm * vec_y_norm
+                        
+                        # Если направления похожи (dot_product > 0.5), учитываем расстояние
+                        if dot_product > 0.5:
+                            min_distance = min(min_distance, vec_length)
+                
+                # Если это направление дает больше места, выбираем его
+                if min_distance > max_min_distance:
+                    max_min_distance = min_distance
+                    best_direction = (dx_norm, dy_norm)
+        
+        return best_direction
+    
+    def _detect_point_clusters(self, point_data: List[Dict], cluster_radius: float = 30) -> List[List[int]]:
+        """Обнаруживает кластеры близко расположенных точек"""
+        clusters = []
+        used_points = set()
+        
+        for i, pd1 in enumerate(point_data):
+            if i in used_points:
+                continue
+                
+            cluster = [i]
+            used_points.add(i)
+            
+            # Ищем точки в радиусе cluster_radius
+            for j, pd2 in enumerate(point_data):
+                if j <= i or j in used_points:
+                    continue
+                    
+                distance = ((pd1['x_rel'] - pd2['x_rel'])**2 + (pd1['y_rel'] - pd2['y_rel'])**2)**0.5
+                if distance <= cluster_radius:
+                    cluster.append(j)
+                    used_points.add(j)
+            
+            clusters.append(cluster)
+        
+        return clusters
+    
+    def _get_fan_angles(self, cluster_size: int, base_angle: float) -> List[float]:
+        """Возвращает углы для веерного размещения подписей кластера"""
+        if cluster_size == 1:
+            return [base_angle]
+        
+        # Веерное размещение: распределяем углы в секторе 120 градусов
+        fan_width = math.radians(120)  # 120 градусов в радианах
+        start_angle = base_angle - fan_width / 2
+        
+        angles = []
+        for i in range(cluster_size):
+            if cluster_size > 1:
+                angle_step = fan_width / (cluster_size - 1)
+                angle = start_angle + i * angle_step
+            else:
+                angle = base_angle
+            angles.append(angle)
+        
+        return angles
+    
+    def _spiral_search_for_label(self, start_x: float, start_y: float, label_text: str, font_size: float,
+                                polygon_points_rel: List[Tuple[float, float]], all_object_buffers: List, 
+                                existing_labels: List[Dict]) -> Tuple[float, float]:
+        """Спиральный поиск места для размещения подписи без пересечений"""
+        
+        # Вычисляем размеры прямоугольника-обертки для подписи
+        char_width = font_size * 0.6
+        text_width = len(label_text) * char_width
+        text_height = font_size
+        padding = 18
+        
+        def create_label_rect(cx, cy):
+            """Создает прямоугольник-обертку с центром в (cx, cy)"""
+            return (
+                cx - text_width/2 - padding,
+                cy - text_height/2 - padding,
+                cx + text_width/2 + padding,
+                cy + text_height/2 + padding
+            )
+        
+        def has_intersections(rect):
+            """Проверяет пересечения прямоугольника со всеми объектами"""
+            # Проверка пересечений с другими подписями
+            for label in existing_labels:
+                if self._bboxes_intersect(rect, label['bbox']):
+                    return True
+            
+            # Проверка пересечений с буферами объектов
+            for obj_buffer in all_object_buffers:
+                if self._bboxes_intersect(rect, obj_buffer):
+                    return True
+            
+            # Проверка, что прямоугольник снаружи полигона
+            rect_center_x = (rect[0] + rect[2]) / 2
+            rect_center_y = (rect[1] + rect[3]) / 2
+            if self._point_inside_polygon(rect_center_x, rect_center_y, polygon_points_rel):
+                return True
+            
+            # Проверка минимального расстояния до границы полигона
+            min_dist = self._distance_to_polygon_edge(rect_center_x, rect_center_y, polygon_points_rel)
+            if min_dist < 20:  # Увеличиваем минимальное расстояние
+                return True
+            
+            return False
+        
+        # Спиральный поиск
+        max_radius = 150  # Максимальный радиус поиска
+        step_size = 3     # Шаг спирали
+        
+        for radius in range(0, max_radius, step_size):
+            # Количество точек на окружности зависит от радиуса
+            num_points = max(8, int(2 * math.pi * radius / 10)) if radius > 0 else 1
+            
+            for i in range(num_points):
+                if radius == 0:
+                    # Центральная точка
+                    test_x, test_y = start_x, start_y
+                else:
+                    # Точки на окружности
+                    angle = i * 2 * math.pi / num_points
+                    test_x = start_x + radius * math.cos(angle)
+                    test_y = start_y + radius * math.sin(angle)
+                
+                # Создаем прямоугольник-обертку
+                test_rect = create_label_rect(test_x, test_y)
+                
+                # Проверяем пересечения
+                if not has_intersections(test_rect):
+                    return test_x, test_y
+        
+        # Fallback: если не нашли место, размещаем справа с максимальным отступом
+        fallback_x = start_x + max_radius
+        fallback_y = start_y
+        return fallback_x, fallback_y
+    
+    def _bboxes_intersect(self, bbox1: Tuple[float, float, float, float], bbox2: Tuple[float, float, float, float]) -> bool:
+        """Проверяет пересечение двух прямоугольников"""
+        return not (bbox1[2] < bbox2[0] or  # bbox1 левее bbox2
+                   bbox1[0] > bbox2[2] or  # bbox1 правее bbox2
+                   bbox1[3] < bbox2[1] or  # bbox1 выше bbox2
+                   bbox1[1] > bbox2[3])    # bbox1 ниже bbox2
+    
+    def _distance_to_polygon_edge(self, x: float, y: float, polygon_points: List[Tuple[float, float]]) -> float:
+        """Вычисляет минимальное расстояние от точки до границы полигона"""
+        min_distance = float('inf')
+        n = len(polygon_points)
+        
+        for i in range(n):
+            j = (i + 1) % n
+            x1, y1 = polygon_points[i]
+            x2, y2 = polygon_points[j]
+            
+            # Расстояние от точки до отрезка
+            distance = self._point_to_segment_distance(x, y, x1, y1, x2, y2)
+            min_distance = min(min_distance, distance)
+        
+        return min_distance
+    
+    def _point_to_segment_distance(self, px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
+        """Вычисляет расстояние от точки до отрезка"""
+        # Вектор отрезка
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        # Если отрезок вырожден в точку
+        if dx == 0 and dy == 0:
+            return ((px - x1)**2 + (py - y1)**2)**0.5
+        
+        # Параметр t для проекции точки на прямую
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        
+        # Ограничиваем t отрезком [0, 1]
+        t = max(0, min(1, t))
+        
+        # Ближайшая точка на отрезке
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+        
+        # Расстояние до ближайшей точки
+        return ((px - closest_x)**2 + (py - closest_y)**2)**0.5
+    
+    def _find_position_outside_polygon(self, point_x: float, point_y: float, 
+                                     dx_norm: float, dy_norm: float, base_offset: float,
+                                     polygon_points: List[Tuple[float, float]], 
+                                     all_object_buffers: List[Tuple[float, float, float, float]] = None,
+                                     label_text: str = "", font_size: float = 12) -> Tuple[float, float]:
+        """Находит позицию для подписи снаружи полигона в заданном направлении"""
+        max_attempts = 50
+        offset_step = 2
+        all_object_buffers = all_object_buffers or []
+        
+        for attempt in range(max_attempts):
+            current_offset = base_offset + (attempt * offset_step)
+            test_x = point_x + dx_norm * current_offset
+            test_y = point_y + dy_norm * current_offset
+            
+            # Проверяем, что позиция снаружи полигона
+            if not self._point_inside_polygon(test_x, test_y, polygon_points):
+                # Дополнительно проверяем расстояние до границы
+                distance_to_edge = self._distance_to_polygon_edge(test_x, test_y, polygon_points)
+                if distance_to_edge >= 8:  # Увеличиваем минимальное расстояние до 8px
+                    # Проверяем пересечения с буферами объектов
+                    if label_text and all_object_buffers:
+                        # Создаем bbox для подписи
+                        char_width = font_size * 0.6
+                        text_width = len(label_text) * char_width
+                        text_height = font_size
+                        padding = 6
+                        label_bbox = (
+                            test_x - padding,
+                            test_y - text_height - padding,
+                            test_x + text_width + padding,
+                            test_y + padding
+                        )
+                        
+                        # Проверяем пересечения с буферами объектов
+                        has_buffer_conflict = any(
+                            not (label_bbox[2] < buf[0] or label_bbox[0] > buf[2] or 
+                                label_bbox[3] < buf[1] or label_bbox[1] > buf[3])
+                            for buf in all_object_buffers
+                        )
+                        
+                        if not has_buffer_conflict:
+                            return test_x, test_y
+                    else:
+                        return test_x, test_y
+        
+        # Если не нашли подходящую позицию, возвращаем максимальный отступ
+        fallback_offset = base_offset + (max_attempts * offset_step)
+        return (
+            point_x + dx_norm * fallback_offset,
+            point_y + dy_norm * fallback_offset
+        )
+    
+    def _place_leader_outside_polygon(self, point_x: float, point_y: float, direction: Tuple[float, float],
+                                    radius_px: float, label_text: str, font_size: float, 
+                                    polygon_points: List[Tuple[float, float]]) -> Tuple[float, float, float, float]:
+        """Размещает выноску ЗА ПРЕДЕЛАМИ контура земельного участка"""
+        # Начинаем с минимального отступа от точки
+        min_offset = radius_px + 5
+        max_offset = 100  # Максимальное расстояние для поиска
+        
+        # Находим точку пересечения луча с границей полигона
+        intersection_point = self._find_polygon_intersection(
+            point_x, point_y, direction, polygon_points
+        )
+        
+        if intersection_point:
+            # Если есть пересечение, размещаем подпись за точкой пересечения
+            intersect_x, intersect_y = intersection_point
+            # Добавляем отступ за границей полигона
+            label_x = intersect_x + direction[0] * 15
+            label_y = intersect_y + direction[1] * 15
+            leader_start_x = point_x + direction[0] * radius_px
+            leader_start_y = point_y + direction[1] * radius_px
+        else:
+            # Если пересечения нет, ищем свободное место в заданном направлении
+            for offset in range(int(min_offset), int(max_offset), 5):
+                test_x = point_x + direction[0] * offset
+                test_y = point_y + direction[1] * offset
+                
+                # Проверяем, что подпись снаружи полигона
+                if not self._point_inside_polygon(test_x, test_y, polygon_points):
+                    # Проверяем, что bbox подписи тоже снаружи
+                    test_bbox = self._get_label_bbox(test_x, test_y, label_text, font_size)
+                    bbox_center_x = (test_bbox[0] + test_bbox[2]) / 2
+                    bbox_center_y = (test_bbox[1] + test_bbox[3]) / 2
+                    
+                    if not self._point_inside_polygon(bbox_center_x, bbox_center_y, polygon_points):
+                        label_x = test_x
+                        label_y = test_y
+                        leader_start_x = point_x + direction[0] * radius_px
+                        leader_start_y = point_y + direction[1] * radius_px
+                        break
+            else:
+                # Fallback: размещаем в максимальном отступе
+                label_x = point_x + direction[0] * max_offset
+                label_y = point_y + direction[1] * max_offset
+                leader_start_x = point_x + direction[0] * radius_px
+                leader_start_y = point_y + direction[1] * radius_px
+        
+        return label_x, label_y, leader_start_x, leader_start_y
+    
+    def _find_polygon_intersection(self, start_x: float, start_y: float, direction: Tuple[float, float],
+                                 polygon_points: List[Tuple[float, float]]) -> Tuple[float, float] | None:
+        """Находит точку пересечения луча с границей полигона"""
+        dx, dy = direction
+        n = len(polygon_points)
+        closest_intersection = None
+        min_distance = float('inf')
+        
+        for i in range(n):
+            j = (i + 1) % n
+            x1, y1 = polygon_points[i]
+            x2, y2 = polygon_points[j]
+            
+            # Проверяем пересечение луча с отрезком
+            intersection = self._ray_segment_intersection(
+                start_x, start_y, dx, dy, x1, y1, x2, y2
+            )
+            
+            if intersection:
+                ix, iy = intersection
+                distance = ((ix - start_x)**2 + (iy - start_y)**2)**0.5
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_intersection = (ix, iy)
+        
+        return closest_intersection
+    
+    def _ray_segment_intersection(self, ray_x: float, ray_y: float, ray_dx: float, ray_dy: float,
+                                seg_x1: float, seg_y1: float, seg_x2: float, seg_y2: float) -> Tuple[float, float] | None:
+        """Находит пересечение луча с отрезком"""
+        # Параметрические уравнения
+        # Луч: P = (ray_x, ray_y) + t * (ray_dx, ray_dy), t >= 0
+        # Отрезок: Q = (seg_x1, seg_y1) + s * (seg_x2 - seg_x1, seg_y2 - seg_y1), 0 <= s <= 1
+        
+        seg_dx = seg_x2 - seg_x1
+        seg_dy = seg_y2 - seg_y1
+        
+        # Решаем систему уравнений
+        det = ray_dx * seg_dy - ray_dy * seg_dx
+        if abs(det) < 1e-10:  # Параллельные линии
+            return None
+        
+        t = (seg_dx * (ray_y - seg_y1) - seg_dy * (ray_x - seg_x1)) / det
+        s = (ray_dx * (ray_y - seg_y1) - ray_dy * (ray_x - seg_x1)) / det
+        
+        if t >= 0 and 0 <= s <= 1:  # Пересечение найдено
+            return (ray_x + t * ray_dx, ray_y + t * ray_dy)
+        
+        return None
+    
+    def _point_inside_polygon(self, x: float, y: float, polygon_points: List[Tuple[float, float]]) -> bool:
+        """Проверяет, находится ли точка внутри полигона (алгоритм ray casting)"""
+        n = len(polygon_points)
+        inside = False
+        j = n - 1
+        
+        for i in range(n):
+            xi, yi = polygon_points[i]
+            xj, yj = polygon_points[j]
+            
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+        
+        return inside
+    
+    def _get_label_bbox(self, x: float, y: float, text: str, font_size: float) -> Tuple[float, float, float, float]:
+        """Возвращает bbox подписи: (x_min, y_min, x_max, y_max)"""
+        char_width = font_size * 0.6
+        text_width = len(text) * char_width
+        text_height = font_size
+        padding = 2
+        return (
+            x - padding,
+            y - text_height - padding,
+            x + text_width + padding,
+            y + padding
+        )
+
     # --- Размещение подписей с выносками ---
     def _segments_intersect(self, ax, ay, bx, by, cx, cy, dx, dy) -> bool:
         def orient(px, py, qx, qy, rx, ry):
@@ -594,16 +996,20 @@ class SVGGraphicsGenerator:
         content_w_px = width_m * px_per_meter
         content_h_px = height_m * px_per_meter
 
+        # Центрирование: вычисляем отступы для размещения чертежа по центру рабочей области
+        offset_x_px = max(0, (wa_w_px - content_w_px) / 2) if content_w_px < wa_w_px else 0
+        offset_y_px = max(0, (wa_h_px - content_h_px) / 2) if content_h_px < wa_h_px else 0
+
         # Кол-во тайлов
         cols = max(1, int(math.ceil(content_w_px / wa_w_px)))
         rows = max(1, int(math.ceil(content_h_px / wa_h_px)))
 
-        # Координатное преобразование "метры -> пиксели"
+        # Координатное преобразование "метры -> пиксели" с учетом центрирования
         def to_px(xm: float, ym: float) -> Tuple[float, float]:
             return (
-                (xm - min_x) * px_per_meter,
+                (xm - min_x) * px_per_meter + offset_x_px,
                 # SVG y вниз, метры вверх
-                content_h_px - (ym - min_y) * px_per_meter,
+                content_h_px - (ym - min_y) * px_per_meter + offset_y_px,
             )
 
         # Разбиваем рабочую область на сетку тайлов
@@ -628,58 +1034,262 @@ class SVGGraphicsGenerator:
                     f'<defs><clipPath id="{clip_id}"><rect x="{tile_x0 - label_pad_px:.2f}" y="{tile_y0 - label_pad_px:.2f}" width="{wa_w_px + 2*label_pad_px:.2f}" height="{wa_h_px + 2*label_pad_px:.2f}"/></clipPath></defs>'
                 )
 
-                # Полигон участка
+                # Границы участка - рисуем по сегментам с классификацией по статусам точек
                 contour = [(p['x'], p['y']) for p in points]
                 pts_px = [to_px(x, y) for x, y in contour]
-                # Смещаем полигон относительно окна тайла
+                # Смещаем координаты относительно окна тайла
                 pts_px_shift = [(x - tile_x0, y - tile_y0) for x, y in pts_px]
 
-                # Стиль границы по статусу
-                parcel = parcels[0] if parcels else {}
-                b_status = parcel.get('boundary_status') or parcel.get('status')
-                stroke = self.config.black
-                dash = None
-                legend_token = "boundary-existing"
-                stroke_w = "0.2mm"
-                if str(b_status) == BoundaryStatus.NEW:
-                    stroke = self.config.red
-                    legend_token = "boundary-new"
-                elif str(b_status) == BoundaryStatus.UNCERTAIN:
-                    stroke = self.config.black
-                    dash = "2mm 1mm"
-                    legend_token = "boundary-uncertain"
-                parts.append(
-                    f'<g clip-path="url(#{clip_id})">{self._create_polygon(pts_px_shift, fill="none", stroke=stroke, stroke_width=stroke_w, stroke_dasharray=dash)}</g>'
-                )
-                self.used_legend_tokens.add(legend_token)
+                # Рисуем каждый сегмент границы отдельно с классификацией
+                n = len(points)
+                for i in range(n):
+                    j = (i + 1) % n
+                    x1_shift, y1_shift = pts_px_shift[i]
+                    x2_shift, y2_shift = pts_px_shift[j]
+                    
+                    # Определяем статус сегмента по статусам конечных точек
+                    # Согласно правилам: граница красная если ХОТЯ БЫ ОДНА точка новая
+                    k1 = str(points[i].get('kind', 'EXISTING'))
+                    k2 = str(points[j].get('kind', 'EXISTING'))
+                    
+                    # Устанавливаем цвет границы (красная для новых точек)
+                    stroke = self.config.red if k1 in ('NEW', 'CREATED') or k2 in ('NEW', 'CREATED') else self.config.black
+                    legend_token = "boundary-new" if stroke == self.config.red else "boundary-existing"
+                    dash = None
+                    
+                    # Рисуем сегмент
+                    parts.append(
+                        f'<g clip-path="url(#{clip_id})"><line x1="{x1_shift:.2f}" y1="{y1_shift:.2f}" x2="{x2_shift:.2f}" y2="{y2_shift:.2f}" '
+                        f'stroke="{stroke}" stroke-width="0.2mm"'
+                        f'{f" stroke-dasharray=\"{dash}\"" if dash else ""}/></g>'
+                    )
+                    
+                    # Добавляем токен в легенду
+                    self.used_legend_tokens.add(legend_token)
 
-                # Точки и подписи
+                # Вычисляем центр полигона для размещения подписей снаружи
+                def polygon_centroid(pts):
+                    n = len(pts)
+                    if n == 0:
+                        return (0, 0)
+                    cx = sum(p[0] for p in pts) / n
+                    cy = sum(p[1] for p in pts) / n
+                    return (cx, cy)
+                
+                pts_px_abs = [to_px(p['x'], p['y']) for p in points]
+                center_x, center_y = polygon_centroid(pts_px_abs)
+                
+                # Функция для расчета размера буфера подписи (bbox)
+                def get_label_bbox(x, y, text, font_size):
+                    """Возвращает bbox подписи: (x_min, y_min, x_max, y_max)"""
+                    # Примерная ширина символа = 0.6 * font_size
+                    # Высота = font_size
+                    char_width = font_size * 0.6
+                    text_width = len(text) * char_width
+                    text_height = font_size
+                    
+                    # Увеличиваем отступы для максимальной читаемости
+                    padding = 18  # Увеличиваем padding с 12 до 18
+                    return (
+                        x - padding,
+                        y - text_height - padding,
+                        x + text_width + padding,
+                        y + padding
+                    )
+                
+                # Функция для расчета буфера точки (окружности)
+                def get_point_bbox(x, y, radius_px):
+                    """Возвращает bbox точки с буфером: (x_min, y_min, x_max, y_max)"""
+                    # Буфер вокруг точки = радиус + отступ
+                    buffer = radius_px + 30  # Увеличиваем буфер точки для максимального разделения
+                    return (
+                        x - buffer,
+                        y - buffer,
+                        x + buffer,
+                        y + buffer
+                    )
+                
+                # Функция для расчета буфера границы (линии)
+                def get_boundary_buffer_zones(polygon_points):
+                    """Создает буферные зоны вокруг всех границ полигона"""
+                    buffer_zones = []
+                    n = len(polygon_points)
+                    buffer_width = 25  # Увеличиваем буферную зону вокруг границы до максимума
+                    
+                    for i in range(n):
+                        j = (i + 1) % n
+                        x1, y1 = polygon_points[i]
+                        x2, y2 = polygon_points[j]
+                        
+                        # Создаем буферную зону вокруг линии
+                        buffer_zones.append(get_line_buffer_bbox(x1, y1, x2, y2, buffer_width))
+                    
+                    return buffer_zones
+                
+                def get_line_buffer_bbox(x1, y1, x2, y2, buffer_width):
+                    """Возвращает bbox буферной зоны вокруг линии"""
+                    # Находим минимальные и максимальные координаты
+                    min_x = min(x1, x2) - buffer_width
+                    max_x = max(x1, x2) + buffer_width
+                    min_y = min(y1, y2) - buffer_width
+                    max_y = max(y1, y2) + buffer_width
+                    
+                    return (min_x, min_y, max_x, max_y)
+                
+                def bboxes_intersect(bbox1, bbox2):
+                    """Проверяет пересечение двух bbox"""
+                    return not (bbox1[2] < bbox2[0] or  # bbox1 левее bbox2
+                               bbox1[0] > bbox2[2] or  # bbox1 правее bbox2
+                               bbox1[3] < bbox2[1] or  # bbox1 выше bbox2
+                               bbox1[1] > bbox2[3])    # bbox1 ниже bbox2
+                
+                # Подготовка данных точек
+                point_data = []
                 created_index = 0
                 existing_index = 0
+                
                 for i, (xm, ym) in enumerate(contour):
-                    x, y = to_px(xm, ym)
-                    x -= tile_x0
-                    y -= tile_y0
+                    x_abs, y_abs = to_px(xm, ym)
+                    x_rel = x_abs - tile_x0
+                    y_rel = y_abs - tile_y0
                     kind = (points[i].get('kind') if i < len(points) else 'CREATED')
+                    
                     if str(kind) in ('NEW', 'CREATED'):
                         col = self.config.red
                         created_index += 1
                         label_txt = f"н{created_index}"
+                        point_radius = self.config.created_point_radius
                         self.used_legend_tokens.add("point-new")
+                        self.used_legend_tokens.add("label-point-new")
                     else:
                         col = self.config.black
                         existing_index += 1
                         label_txt = f"{existing_index}"
+                        point_radius = self.config.existing_point_radius
                         self.used_legend_tokens.add("point-existing")
-                    parts.append(f'<g clip-path="url(#{clip_id})">{self._create_circle(x, y, r=f"{self.config.created_point_radius}mm" if str(kind) in ("NEW","CREATED") else f"{self.config.existing_point_radius}mm", fill=col)}</g>')
-                    parts.append(self._create_text(x + 6, y - 6, label_txt, fill=col, font_size=self.config.font_size, text_anchor="start"))
+                        self.used_legend_tokens.add("label-point-existing")
+                    
+                    point_data.append({
+                        'x_abs': x_abs,
+                        'y_abs': y_abs,
+                        'x_rel': x_rel,
+                        'y_rel': y_rel,
+                        'label': label_txt,
+                        'color': col,
+                        'radius_mm': point_radius,
+                        'radius_px': mm_to_px(point_radius, self.config.dpi)
+                    })
+                
+                # Функция проверки пересечения с полигоном
+                def point_inside_polygon(x, y, polygon_points):
+                    """Проверяет, находится ли точка внутри полигона (алгоритм ray casting)"""
+                    n = len(polygon_points)
+                    inside = False
+                    j = n - 1
+                    
+                    for i in range(n):
+                        xi, yi = polygon_points[i]
+                        xj, yj = polygon_points[j]
+                        
+                        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                            inside = not inside
+                        j = i
+                    
+                    return inside
+                
+                # Создаем все буферы для проверки пересечений
+                label_positions = []
+                point_bboxes = []  # Буферы точек
+                boundary_bboxes = []  # Буферы границ
+                font_size_px = self.config.font_size
+                
+                # Создаем буферы всех точек
+                for pd in point_data:
+                    point_bbox = get_point_bbox(pd['x_rel'], pd['y_rel'], pd['radius_px'])
+                    point_bboxes.append(point_bbox)
+                
+                # Создаем буферы всех границ
+                boundary_bboxes = get_boundary_buffer_zones(pts_px_abs)
+                
+                # Объединяем все буферы объектов (кроме подписей)
+                all_object_buffers = point_bboxes + boundary_bboxes
+                
+                # Обнаруживаем кластеры точек для веерного размещения
+                clusters = self._detect_point_clusters(point_data, cluster_radius=30)
+                
+                # Создаем карту углов для каждой точки
+                point_angles = {}
+                for cluster in clusters:
+                    if len(cluster) > 1:  # Только для кластеров из нескольких точек
+                        # Вычисляем базовый угол для кластера (от центра полигона)
+                        cluster_center_x = sum(point_data[idx]['x_abs'] for idx in cluster) / len(cluster)
+                        cluster_center_y = sum(point_data[idx]['y_abs'] for idx in cluster) / len(cluster)
+                        
+                        base_dx = cluster_center_x - center_x
+                        base_dy = cluster_center_y - center_y
+                        base_angle = math.atan2(base_dy, base_dx)
+                        
+                        # Получаем веерные углы для кластера
+                        fan_angles = self._get_fan_angles(len(cluster), base_angle)
+                        
+                        # Присваиваем углы точкам в кластере
+                        for i, point_idx in enumerate(cluster):
+                            point_angles[point_idx] = fan_angles[i]
+                
+                for i, pd in enumerate(point_data):
+                    # Используем веерный угол если точка в кластере, иначе направление от центра
+                    if i in point_angles:
+                        # Используем предварительно вычисленный веерный угол
+                        angle = point_angles[i]
+                        dx_norm = math.cos(angle)
+                        dy_norm = math.sin(angle)
+                    else:
+                        # Направление от центра наружу (для одиночных точек)
+                        dx = pd['x_abs'] - center_x
+                        dy = pd['y_abs'] - center_y
+                        dist = (dx**2 + dy**2)**0.5
+                        
+                        if dist > 0.1:
+                            # Нормализуем направление
+                            dx_norm = dx / dist
+                            dy_norm = dy / dist
+                        else:
+                            dx_norm, dy_norm = 1, 0  # Fallback направление
+                    
+                    # Начальная позиция для спирального поиска (относительные координаты)
+                    base_offset = pd['radius_px'] + 35  # Увеличиваем отступ от точки
+                    start_x = pd['x_rel'] + dx_norm * base_offset
+                    start_y = pd['y_rel'] + dy_norm * base_offset
+                    
+                    # Спиральный поиск оптимальной позиции для прямоугольника-обертки
+                    label_x, label_y = self._spiral_search_for_label(
+                        start_x, start_y, pd['label'], font_size_px,
+                        pts_px_shift, all_object_buffers, label_positions
+                    )
+                    
+                    # Создаем bbox для найденной позиции (прямоугольник-обертка уже учтен в спиральном поиске)
+                    bbox = get_label_bbox(label_x, label_y, pd['label'], font_size_px)
+                    
+                    label_positions.append({'bbox': bbox, 'x': label_x, 'y': label_y})
+                
+                # Рисуем точки и подписи
+                for i, pd in enumerate(point_data):
+                    # Рисуем точку
+                    parts.append(f'<g clip-path="url(#{clip_id})">{self._create_circle(pd["x_rel"], pd["y_rel"], r=f"{pd["radius_mm"]}mm", fill=pd["color"])}</g>')
+                    
+                    # Рисуем подпись
+                    lp = label_positions[i]
+                    parts.append(self._create_text(lp['x'], lp['y'], pd['label'], fill=pd['color'], font_size=font_size_px, text_anchor="start"))
 
-                # Подпись участка в центре всей области (не тайла)
+                # Подпись участка в центре полигона (центроид)
                 if parcels:
                     label = ParcelLabelFormatter.build_parcel_label(parcels[0])
-                    cx = content_w_px / 2 - tile_x0
-                    cy = content_h_px / 2 - tile_y0
+                    # Используем центроид полигона вместо центра рабочей области
+                    cx = center_x - tile_x0
+                    cy = center_y - tile_y0
                     parts.append(self._create_text(cx, cy, label, fill=self.config.black, font_size=16, text_anchor="middle"))
+                    # Добавляем токен для подписи участка в легенду
+                    self.used_legend_tokens.add("label-parcel")
 
                 # Подсказка о продолжении
                 page_num = r * cols + c + 1

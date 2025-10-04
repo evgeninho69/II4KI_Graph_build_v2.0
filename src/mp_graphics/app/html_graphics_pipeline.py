@@ -71,7 +71,13 @@ def process_real_data_to_html(cpp_data: Dict[str, Any],
             svg_pages = svg_generator.generate_drawings_paginated(cpp_data)
             # Сохраним несколько файлов CH_pN.html
             for i, svg_content in enumerate(svg_pages, start=1):
-                legend_items = generate_legend_for_data(cpp_data)
+                # Используем динамическую легенду из used_legend_tokens
+                from ..graphics.labels import LegendBuilder
+                if hasattr(svg_generator, 'used_legend_tokens') and svg_generator.used_legend_tokens:
+                    legend_items = LegendBuilder.build(svg_generator.used_legend_tokens)
+                else:
+                    legend_items = generate_legend_for_data(cpp_data)
+                
                 scale = cpp_data.get('scales_allowed', [500])[0]
                 scale_text = f"Масштаб 1:{scale}"
                 html_file = output_dir / f"CH_p{i}.html"
@@ -163,46 +169,96 @@ def _copy_css_files(output_dir: Path):
 
 
 def _apply_operation_labels(cpp_data: Dict[str, Any]) -> None:
-    """Автоматически проставляет метки ЗУ согласно контексту операции (§78–79)."""
+    """
+    Автоматически проставляет метки ЗУ согласно контексту операции (§78–79).
+    
+    Логика определения статуса и обозначения участка:
+    
+    I. Определение статуса ЗУ:
+       - Если одна XML выписка → ЗУ учтенный (Уточнение/Раздел)
+       - Если две и более XML выписок → ЗУ учтенные (Объединение/Перераспределение)
+       - Если нет XML выписок → ЗУ вновь образуемый
+    
+    II. Правила обозначений:
+       1. Уточнение границ (один учтенный ЗУ) → :28 (последний блок КН)
+       2. Раздел/Выдел (из одного ЗУ) → :123:ЗУ1, :123:ЗУ2
+       3. Объединение/Перераспределение (два и более ЗУ) → :ЗУ1, :ЗУ2 (без квартала)
+       4. Части ЗУ → :123/5, :123/чзу1, :123:ЗУ1/чзу1, :ЗУ1/чзу1
+    """
     entities = cpp_data.get('entities', {})
     parcels = entities.get('parcels', []) or []
     if not parcels:
         return
-    # Определяем кадастровый квартал из номера основного ЗУ или из поля cpp_data.project
-    def quartal_from_parcel(p: Dict[str, Any]) -> str:
+    
+    # Проверяем количество XML выписок на исходные участки
+    has_parcel_xml = cpp_data.get('has_parcel_xml', False)
+    parcel_xml_count = cpp_data.get('parcel_xml_count', 0)
+    
+    # Функция для извлечения последнего блока кадастрового номера
+    def last_block_from_cadastral(p: Dict[str, Any]) -> str:
+        """Извлекает последний блок КН (например, из 04:11:010120:28 → 28)"""
         cad = p.get('cadastral_number') or ''
         if cad and ':' in cad:
             return cad.split(':')[-1]
         return cad
 
-    op = cpp_data.get('operation') or ''
+    op = cpp_data.get('operation') or 'CLARIFY'
     op = str(op).upper()
     counter_new = 0
     counter_parts = 0
+    
     for p in parcels:
-        q = quartal_from_parcel(p) or '0'
-        # Если уже есть валидная метка — не перезаписываем
+        # Если уже есть валидная метка designation — не перезаписываем
         label = p.get('designation') or ''
-        if any(validate_label(label, kind) for kind in (
+        if label and any(validate_label(label, kind) for kind in (
             'clarify','split','merge','part_existing','part_new_changed','part_new_split','part_new_merge'
         )):
             continue
-        # Расставляем по типу операции
+        
+        # Если designation пустое - всегда применяем правила
+        
+        # Определяем обозначение по типу операции
         if op == 'CLARIFY':
-            p['designation'] = ParcelLabelFormatter.base_label_for_clarify(q)
+            # Для уточнения: если есть XML - учтенный ЗУ (:28), иначе - вновь образуемый (:ЗУ1)
+            if has_parcel_xml:
+                last_block = last_block_from_cadastral(p) or 'ЗУ'
+                p['designation'] = ParcelLabelFormatter.base_label_for_clarify(last_block)
+            else:
+                counter_new += 1
+                p['designation'] = ParcelLabelFormatter.new_label_for_merge(counter_new)
+            
         elif op in ('SPLIT', 'ALLOT'):
-            counter_new += 1
-            p['designation'] = ParcelLabelFormatter.new_label_for_split(q, counter_new)
+            # Раздел/Выдел (из одного ЗУ) → :123:ЗУ1, :123:ЗУ2
+            # Требует одну XML выписку
+            if parcel_xml_count == 1:
+                counter_new += 1
+                quartal = last_block_from_cadastral(p) or '0'
+                p['designation'] = ParcelLabelFormatter.new_label_for_split(quartal, counter_new)
+            else:
+                # Если нет XML - вновь образуемый
+                counter_new += 1
+                p['designation'] = ParcelLabelFormatter.new_label_for_merge(counter_new)
+            
         elif op in ('MERGE', 'REDISTRIBUTE'):
+            # Объединение/Перераспределение (два и более ЗУ) → :ЗУ1, :ЗУ2
+            # Требует две и более XML выписок (или ноль - тоже вновь образуемый)
             counter_new += 1
             p['designation'] = ParcelLabelFormatter.new_label_for_merge(counter_new)
+            
         elif op == 'PARTS':
+            # Части ЗУ → :123/чзу1
             counter_parts += 1
-            # Выберем правило для новых частей на изменённом: :123/чзуN
-            p['designation'] = ParcelLabelFormatter.part_new_on_changed(q, counter_parts)
+            quartal = last_block_from_cadastral(p) or '0'
+            p['designation'] = ParcelLabelFormatter.part_new_on_changed(quartal, counter_parts)
+            
         else:
-            # по умолчанию — :{quartal}
-            p['designation'] = ParcelLabelFormatter.base_label_for_clarify(q)
+            # По умолчанию для вновь образуемого → :ЗУ1
+            if has_parcel_xml:
+                last_block = last_block_from_cadastral(p) or 'ЗУ'
+                p['designation'] = ParcelLabelFormatter.base_label_for_clarify(last_block)
+            else:
+                counter_new += 1
+                p['designation'] = ParcelLabelFormatter.new_label_for_merge(counter_new)
 
 
 def create_project_summary_html(cpp_data: Dict[str, Any], 

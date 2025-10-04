@@ -7,7 +7,7 @@ from typing import Dict, List
 from ..datasource.json_provider import load_cpp_data
 from ..datasource.import_txt import parse_txt, parse_stations_txt
 from ..datasource.import_xml import parse_xml
-from ..datasource.import_xml_srzu import parse_cadastre_xml, parse_txt_polygon
+from ..datasource.import_xml_srzu import parse_cadastre_xml, parse_txt_polygon, parse_txt_boundary_points
 from ..graphics.svg_generator import SVGConfig
 from .html_graphics_pipeline import process_real_data_to_html
 
@@ -63,8 +63,9 @@ def main(argv: List[str] | None = None) -> int:
     if args.srzu_xml:
         try:
             srzu_data = parse_cadastre_xml(Path(args.srzu_xml))
-            # Если есть TXT с целевым участком — подмешиваем как target_parcels
+            # Если есть TXT с целевым участком — подмешиваем как target_parcels И boundary_points
             if args.srzu_txt:
+                # Для SRZU: добавляем как target_parcels
                 coords = parse_txt_polygon(Path(args.srzu_txt))
                 if coords:
                     srzu_data.setdefault('target_parcels', []).append({
@@ -72,6 +73,15 @@ def main(argv: List[str] | None = None) -> int:
                         'coordinates': [coords],
                         'properties': {'status': 'NEW', 'designation': ':ЗУ'}
                     })
+                
+                # Для чертежа: добавляем как boundary_points
+                boundary_points = parse_txt_boundary_points(Path(args.srzu_txt))
+                if boundary_points:
+                    # Добавляем boundary_points в основные данные для чертежа
+                    if 'entities' not in cpp_data:
+                        cpp_data['entities'] = {}
+                    cpp_data['entities']['boundary_points'] = boundary_points
+                    print(f"📍 Загружено {len(boundary_points)} характерных точек для чертежа")
             cpp_data['srzu'] = srzu_data
         except Exception as e:
             print(f"⚠️ Не удалось разобрать SRZU XML: {e}")

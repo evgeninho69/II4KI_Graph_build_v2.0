@@ -109,6 +109,7 @@ def _add_rectangular_quarter(parcels_coords: List[List[List[float]]], quarters: 
 
 
 def parse_txt_polygon(path: str | Path) -> List[List[float]]:
+    """Парсит TXT файл и возвращает координаты полигона"""
     p = Path(path)
     if not p.exists():
         return []
@@ -129,6 +130,128 @@ def parse_txt_polygon(path: str | Path) -> List[List[float]]:
     if coords and coords[0] != coords[-1]:
         coords.append(coords[0])
     return coords
+
+
+def parse_txt_boundary_points(
+    path: str | Path, 
+    operation: str = "CLARIFY",
+    existing_parcel_xml: str | Path | None = None,
+    tolerance: float = 0.01
+) -> List[Dict[str, Any]]:
+    """
+    Парсит TXT файл с координатами и создает boundary_points с правильными статусами.
+    
+    Логика определения статуса точек (согласно rules.md):
+    
+    ПРАВИЛО 1 (Отсутствие исходной геометрии):
+      Если existing_parcel_xml не указан ИЛИ в XML нет координат:
+      → ВСЕ точки CREATED (новые, красные круги d=1.5мм, префикс "н")
+      → ВСЕ границы красные (вновь образуемые)
+    
+    ПРАВИЛО 2 (Наличие исходной геометрии):
+      Если existing_parcel_xml указан И в XML есть координаты:
+      → Сравниваем с tolerance (по умолчанию 0.01м)
+      → Совпадающие точки = EXISTING (черные круги d=1.5мм)
+      → Новые точки = CREATED (красные круги, префикс "н")
+      → Граница красная если ХОТЯ БЫ ОДНА точка новая
+    
+    Args:
+        path: Путь к TXT файлу с координатами (формат: номер;X;Y)
+        operation: Тип операции (не используется, оставлен для совместимости)
+        existing_parcel_xml: Путь к XML выписке на исходный участок (опционально)
+        tolerance: Допуск при сравнении координат в метрах (по умолчанию 0.01м)
+        
+    Returns:
+        Список точек с атрибутами для boundary_points
+    """
+    p = Path(path)
+    if not p.exists():
+        return []
+    
+    # Читаем координаты из TXT
+    txt_points: List[tuple] = []
+    for line in p.read_text(encoding='utf-8').splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        parts = s.split(';') if ';' in s else s.split()
+        if len(parts) < 3:
+            continue
+        try:
+            point_id = str(parts[0]).strip()
+            x = float(str(parts[1]).replace(',', '.'))
+            y = float(str(parts[2]).replace(',', '.'))
+            txt_points.append((point_id, x, y))
+        except Exception as e:
+            print(f"⚠️ Ошибка парсинга строки '{s}': {e}")
+            continue
+    
+    if not txt_points:
+        return []
+    
+    # Парсим XML с исходным участком (если есть)
+    existing_coords: List[tuple] = []
+    if existing_parcel_xml:
+        xml_path = Path(existing_parcel_xml)
+        if xml_path.exists():
+            try:
+                import xml.etree.ElementTree as ET
+                tree = ET.parse(xml_path)
+                root = tree.getroot()
+                
+                # Ищем координаты границ участка в XML
+                # Пример пути: //Cadastre/EntitySpatial/SpatialElement/SpelementUnit/Ordinate
+                ns = {'ns': root.tag.split('}')[0].strip('{')} if '}' in root.tag else {}
+                
+                for ordinate in root.findall('.//Ordinate', ns) or root.findall('.//{*}Ordinate'):
+                    x_elem = ordinate.find('X', ns) or ordinate.find('{*}X')
+                    y_elem = ordinate.find('Y', ns) or ordinate.find('{*}Y')
+                    if x_elem is not None and y_elem is not None:
+                        try:
+                            x = float(x_elem.text.replace(',', '.'))
+                            y = float(y_elem.text.replace(',', '.'))
+                            existing_coords.append((x, y))
+                        except (ValueError, AttributeError):
+                            continue
+                
+                if existing_coords:
+                    print(f"📋 Найдено {len(existing_coords)} существующих точек в XML выписке на участок")
+                else:
+                    print(f"⚠️ В XML выписке на участок отсутствуют координаты границ")
+                    
+            except Exception as e:
+                print(f"⚠️ Ошибка парсинга XML выписки на участок: {e}")
+    
+    # Определяем статус каждой точки согласно Правилам из rules.md
+    points: List[Dict[str, Any]] = []
+    
+    for idx, (point_id, x, y) in enumerate(txt_points):
+        # ПРАВИЛО 1: Если нет XML или в XML нет координат - все точки НОВЫЕ
+        if not existing_coords:
+            kind = "CREATED"
+        # ПРАВИЛО 2: Если есть XML с координатами - сравниваем
+        else:
+            kind = "CREATED"  # По умолчанию новая
+            for ex_x, ex_y in existing_coords:
+                # Проверяем совпадение с допуском
+                if abs(x - ex_x) <= tolerance and abs(y - ex_y) <= tolerance:
+                    kind = "EXISTING"
+                    break
+        
+        points.append({
+            "id": f"bp{point_id}",
+            "x": x,
+            "y": y,
+            "kind": kind,
+            "number": point_id
+        })
+    
+    # Статистика
+    existing_count = sum(1 for p in points if p['kind'] == 'EXISTING')
+    created_count = sum(1 for p in points if p['kind'] == 'CREATED')
+    print(f"📍 Обработано точек: {len(points)} (существующих: {existing_count}, новых: {created_count})")
+    
+    return points
 
 
 def parse_cadastre_xml(path: str | Path, default_crs: Dict[str, Any] | None = None) -> SRZUData:

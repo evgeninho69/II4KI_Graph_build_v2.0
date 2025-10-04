@@ -160,6 +160,35 @@ body { margin: 20px; font: 13px/1.35 "Times New Roman", Times, serif; color: #11
   content: ":28"; 
   white-space: nowrap;
 }
+/* Подписи точек */
+.legend .legend-label-point-new { 
+  color: #ff0000; 
+  font-size: 9pt;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 12px;
+}
+.legend .legend-label-point-new::before { 
+  content: "н1"; 
+  white-space: nowrap;
+}
+.legend .legend-label-point-existing { 
+  color: #000000; 
+  font-size: 9pt;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 12px;
+}
+.legend .legend-label-point-existing::before { 
+  content: "1"; 
+  white-space: nowrap;
+}
 
 @media print {
   body { background: #fff; margin: 0; box-shadow: none; }
