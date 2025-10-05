@@ -111,14 +111,19 @@ def process_real_data_to_html(cpp_data: Dict[str, Any],
                     legend_items = generate_legend_for_data(cpp_data)
             else:
                 svg_content = svg_generator.generate_complete_svg(cpp_data, generator_section)
-                legend_items = generate_legend_for_data(cpp_data)
+                # Для SGP также используем фактически применённые токены легенды
+                from ..graphics.labels import LegendBuilder
+                if hasattr(svg_generator, 'used_legend_tokens') and svg_generator.used_legend_tokens:
+                    legend_items = LegendBuilder.build(svg_generator.used_legend_tokens)
+                else:
+                    legend_items = generate_legend_for_data(cpp_data)
         
         # Генерируем легенду для этого раздела (нормализованно через LegendBuilder)
         # legend_items = generate_legend_for_data(cpp_data) # This line is now redundant as legend_items is set above
         
         # Определяем масштаб (берем первый доступный)
-        # Для SRZU масштаб не печатаем в шапке — спецификация
-        scale_text = "" if section == "SRZU" else f"Масштаб 1:{cpp_data.get('scales_allowed', [500])[0]}"
+        # Для SRZU и SGP масштаб не печатаем в шапке — спецификация
+        scale_text = "" if section in ("SRZU", "SGP") else f"Масштаб 1:{cpp_data.get('scales_allowed', [500])[0]}"
         
         # Генерируем HTML-лист
         # Единые имена файлов по стандарту Rule 1.2

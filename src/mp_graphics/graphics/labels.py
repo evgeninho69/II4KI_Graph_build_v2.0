@@ -146,6 +146,7 @@ class LegendBuilder:
             "boundary-new": {"css": "legend-boundary-new", "text": "Вновь образованная часть границы"},
             "boundary-uncertain": {"css": "legend-boundary-uncertain", "text": "Часть границы с неопределённостью"},
             "ggs": {"css": "legend-ggs", "text": "Пункт ГГС/СПО"},
+            "oms": {"css": "legend-oms", "text": "Пункт ОМС"},
             "geodir-create": {"css": "legend-geodir-create", "text": "Направление (создание съёмочного)"},
             "geodir-determine": {"css": "legend-geodir-determine", "text": "Направление (определение координат)"},
             # SRZU специфичные слои

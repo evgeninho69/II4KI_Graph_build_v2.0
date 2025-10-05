@@ -345,6 +345,85 @@ class SVGGraphicsGenerator:
         fallback_y = start_y
         return fallback_x, fallback_y
     
+    def _find_position_near_point(self, start_x: float, start_y: float, label_text: str, font_size: float,
+                                 all_object_buffers: List, existing_labels: List[Dict], 
+                                 polygon_points: List[Tuple[float, float]]) -> Tuple[float, float]:
+        """Находит позицию для подписи рядом с точкой (как в CH)"""
+        
+        # Вычисляем размеры прямоугольника-обертки для подписи
+        char_width = font_size * 0.6
+        text_width = len(label_text) * char_width
+        text_height = font_size
+        padding = 4
+        
+        def create_label_rect(cx, cy):
+            """Создает прямоугольник-обертку с центром в (cx, cy)"""
+            return (
+                cx - text_width/2 - padding,
+                cy - text_height/2 - padding,
+                cx + text_width/2 + padding,
+                cy + text_height/2 + padding
+            )
+        
+        def has_intersections(rect):
+            """Проверяет пересечения прямоугольника со всеми объектами"""
+            # Проверка пересечений с другими подписями
+            for label in existing_labels:
+                if self._bboxes_intersect(rect, label['bbox']):
+                    return True
+            
+            # Проверка пересечений с буферами объектов
+            for obj_buffer in all_object_buffers:
+                if self._bboxes_intersect(rect, obj_buffer):
+                    return True
+            
+            return False
+        
+        def is_inside_polygon(rect):
+            """Проверяет, что подпись не попадает внутрь контура земельного участка"""
+            # Проверяем центр прямоугольника подписи
+            center_x = (rect[0] + rect[2]) / 2
+            center_y = (rect[1] + rect[3]) / 2
+            
+            # Если центр внутри полигона, подпись не подходит
+            if self._point_inside_polygon(center_x, center_y, polygon_points):
+                return True
+            
+            # Дополнительно проверяем углы прямоугольника
+            corners = [
+                (rect[0], rect[1]),  # левый верхний
+                (rect[2], rect[1]),  # правый верхний
+                (rect[2], rect[3]),  # правый нижний
+                (rect[0], rect[3])   # левый нижний
+            ]
+            
+            # Если хотя бы один угол внутри полигона, подпись не подходит
+            for corner_x, corner_y in corners:
+                if self._point_inside_polygon(corner_x, corner_y, polygon_points):
+                    return True
+            
+            return False
+        
+        # Пробуем разместить подпись рядом с точкой
+        # Кандидаты: 4 квадранта рядом с точкой
+        candidates = [
+            (start_x, start_y),  # Точная позиция
+            (start_x + 8, start_y),  # Справа
+            (start_x, start_y - 8),  # Сверху
+            (start_x - 8, start_y),  # Слева
+            (start_x, start_y + 8),  # Снизу
+        ]
+        
+        for test_x, test_y in candidates:
+            test_rect = create_label_rect(test_x, test_y)
+            
+            # Проверяем, что подпись не пересекается с объектами И не попадает внутрь полигона
+            if not has_intersections(test_rect) and not is_inside_polygon(test_rect):
+                return test_x, test_y
+        
+        # Если не нашли место, возвращаем начальную позицию
+        return start_x, start_y
+    
     def _bboxes_intersect(self, bbox1: Tuple[float, float, float, float], bbox2: Tuple[float, float, float, float]) -> bool:
         """Проверяет пересечение двух прямоугольников"""
         return not (bbox1[2] < bbox2[0] or  # bbox1 левее bbox2
@@ -894,6 +973,392 @@ class SVGGraphicsGenerator:
                 svg_elements.append(distance_text)
         
         return "\n".join(svg_elements)
+
+    def generate_sgp_graphics(self, parcels: List[Dict[str, Any]],
+                              stations: List[Dict[str, Any]],
+                              directions: List[Dict[str, Any]],
+                              boundary_points: List[Dict[str, Any]]) -> str:
+        """Генерация СГП без масштаба с переносом пунктов рядом с участком.
+        1) Нормализуем контур участка в увеличенной области; 2) Вычисляем центроид в метрах и px;
+        3) Каждую станцию переносим на окружность вокруг участка, сохраняя азимут от центроида;
+        4) Рисуем направления от перенесённых станций к точке н1 с подписями расстояний.
+        Дополнительно: контур ЗУ рисуется по сегментам с цветами как в CH, точки границы
+        отображаются с подписями; возле станций печатаются их координаты X/Y.
+        """
+        if not boundary_points:
+            return ""
+
+        # Используем рабочую область как в CH (с учётом полей, заголовка и легенды)
+        original_width = self.config.width
+        original_height = self.config.height
+        # Получаем размеры рабочей области как в CH
+        workarea_w, workarea_h = self._workarea_size_px()
+        self.config.width = int(workarea_w)
+        self.config.height = int(workarea_h)
+
+        # Нормализуем контур ЗУ в увеличенной области
+        coords = [(p.get('x', 0.0), p.get('y', 0.0)) for p in boundary_points]
+        norm_pts, _, _ = self._normalize_coordinates(coords)
+        # Уменьшаем видимый масштаб ЗУ на СГП, чтобы освободить место для пунктов
+        parcel_scale = 0.7  # 70% от нормализованного размера
+        if len(norm_pts) >= 3:
+            cx_tmp = sum(x for x, _ in norm_pts) / len(norm_pts)
+            cy_tmp = sum(y for _, y in norm_pts) / len(norm_pts)
+            scaled = []
+            for x, y in norm_pts:
+                sx = cx_tmp + (x - cx_tmp) * parcel_scale
+                sy = cy_tmp + (y - cy_tmp) * parcel_scale
+                scaled.append((sx, sy))
+            norm_pts = scaled
+        parts: List[str] = []
+
+        # Сначала вычисляем центрирование, потом рисуем контур
+
+        # Вычисляем границы масштабированного участка
+        min_x = min(x for x, _ in norm_pts)
+        max_x = max(x for x, _ in norm_pts)
+        min_y = min(y for _, y in norm_pts)
+        max_y = max(y for _, y in norm_pts)
+        
+        # Центрируем участок в рабочей области
+        parcel_width = max_x - min_x
+        parcel_height = max_y - min_y
+        center_x = (min_x + max_x) / 2
+        center_y = (min_y + max_y) / 2
+        
+        # Добавляем буферную зону для размещения станций и подписей
+        buffer_zone = 150.0  # пикселей
+        required_width = parcel_width + 2 * buffer_zone
+        required_height = parcel_height + 2 * buffer_zone
+        
+        # Проверяем, помещается ли участок с буферной зоной
+        if required_width > self.config.width or required_height > self.config.height:
+            # Уменьшаем масштаб участка, чтобы поместился с буферной зоной
+            scale_factor = min(
+                (self.config.width - 2 * buffer_zone) / parcel_width,
+                (self.config.height - 2 * buffer_zone) / parcel_height
+            )
+            # Пересчитываем координаты с новым масштабом
+            new_norm_pts = []
+            for x, y in norm_pts:
+                new_x = center_x + (x - center_x) * scale_factor
+                new_y = center_y + (y - center_y) * scale_factor
+                new_norm_pts.append((new_x, new_y))
+            norm_pts = new_norm_pts
+            # Пересчитываем границы
+            min_x = min(x for x, _ in norm_pts)
+            max_x = max(x for x, _ in norm_pts)
+            min_y = min(y for _, y in norm_pts)
+            max_y = max(y for _, y in norm_pts)
+            center_x = (min_x + max_x) / 2
+            center_y = (min_y + max_y) / 2
+        
+        # Смещение для центрирования участка в рабочей области (как в CH)
+        shift_x = self.config.width / 2 - center_x
+        shift_y = self.config.height / 2 - center_y
+        
+        # Применяем смещение к участку
+        norm_pts = [(x + shift_x, y + shift_y) for (x, y) in norm_pts]
+        cx_px = center_x + shift_x
+        cy_px = center_y + shift_y
+        cx_m = sum(p.get('x', 0.0) for p in boundary_points) / len(boundary_points)
+        cy_m = sum(p.get('y', 0.0) for p in boundary_points) / len(boundary_points)
+
+        # Контур участка — по сегментам с цветами как в CH
+        n = len(norm_pts)
+        if n >= 2:
+            for i in range(n):
+                j = (i + 1) % n
+                x1, y1 = norm_pts[i]
+                x2, y2 = norm_pts[j]
+                k1 = str(boundary_points[i].get('kind', 'EXISTING'))
+                k2 = str(boundary_points[j].get('kind', 'EXISTING'))
+                if k1 in ('NEW', 'CREATED') or k2 in ('NEW', 'CREATED'):
+                    seg_status = BoundaryStatus.NEW
+                elif k1 == 'EXISTING' and k2 == 'EXISTING':
+                    seg_status = BoundaryStatus.EXISTING
+                else:
+                    seg_status = BoundaryStatus.UNCERTAIN
+                parts.append(self._draw_boundary_segment(x1, y1, x2, y2, seg_status))
+
+        # Уменьшаем радиус кольца для станций - они должны быть ближе к участку
+        max_dist_px = 0.0
+        for x, y in norm_pts:
+            d = ((x - cx_px)**2 + (y - cy_px)**2) ** 0.5
+            max_dist_px = max(max_dist_px, d)
+        buffer_px = 40.0  # уменьшенная буферная зона вокруг участка
+        ring_r = max_dist_px + buffer_px  # минимально за пределами буфера
+        # Гарантируем вхождение станций и их подписей в рабочую область
+        pad = 80.0  # уменьшенный запас под подписи
+        max_r_left = max(10.0, cx_px - pad)
+        max_r_up = max(10.0, cy_px - pad)
+        max_r_right = max(10.0, self.config.width - cx_px - pad)
+        max_r_down = max(10.0, self.config.height - cy_px - pad)
+        ring_r = min(max(ring_r, max_dist_px + buffer_px), max_r_left, max_r_up, max_r_right, max_r_down)
+
+        # Находим точку н1 для направлений (первая точка по порядку, уже смещённая)
+        point_n1 = boundary_points[0] if boundary_points else None
+        point_n1_coords = norm_pts[0] if norm_pts else None
+
+        # Определяем маркер стрелки для направлений
+        parts.append(
+            '<defs>'
+            '  <marker id="sgp-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">'
+            '    <path d="M0,0 L0,6 L6,3 z" fill="#0077CC" />'
+            '  </marker>'
+            '</defs>'
+        )
+
+        # Переносим станции по азимуту (используем смещённый центроид)
+        placed: Dict[Any, Tuple[float, float]] = {}
+        for st in stations or []:
+            sid = st.get('id')
+            sx_m = float(st.get('x', 0.0))
+            sy_m = float(st.get('y', 0.0))
+            ang = math.atan2(sy_m - cy_m, sx_m - cx_m)
+            sx = cx_px + ring_r * math.cos(ang)
+            sy = cy_px + ring_r * math.sin(ang)
+            placed[sid] = (sx, sy)
+            
+            # Символ станции согласно типу: GGS (треугольник) или OMS (квадрат)
+            kind = (st.get('kind') or 'OMS').upper()
+            if kind == 'GGS':
+                parts.append(self._create_triangle(sx, sy, size=5.0, fill="#fff", stroke=self.config.blue, stroke_width="0.5mm"))
+                self.used_legend_tokens.add("ggs")
+            else:
+                parts.append(self._create_square(sx, sy, size=4.0, fill="#fff", stroke=self.config.blue, stroke_width="0.5mm"))
+                parts.append(self._create_circle(sx, sy, r=0.8, fill=self.config.blue))
+                self.used_legend_tokens.add("oms")
+            
+            # Подпись станции
+            name = st.get('name') or st.get('id')
+            if name:
+                parts.append(self._create_text(sx + 6, sy - 6, str(name), fill=self.config.blue, font_size=self.config.font_size - 1, text_anchor="start"))
+            
+            # Координаты станции скрыты по требованиям СГП
+            
+            # Направление к точке н1 с подписью расстояния
+            if point_n1_coords:
+                # Вычисляем реальное расстояние в метрах
+                real_distance = ((sx_m - point_n1.get('x', 0.0))**2 + (sy_m - point_n1.get('y', 0.0))**2)**0.5
+                
+                # Рисуем направление (синяя линия со стрелкой)
+                line = self._create_line(sx, sy, point_n1_coords[0], point_n1_coords[1], 
+                                         stroke=self.config.blue, stroke_width="0.2mm")
+                # добавляем стрелку
+                if 'marker-end' not in line:
+                    parts.append(line.replace('/>', ' marker-end="url(#sgp-arrow)"/>'))
+                else:
+                    parts.append(line)
+                
+                # Подпись расстояния в середине линии
+                mid_x = (sx + point_n1_coords[0]) / 2
+                mid_y = (sy + point_n1_coords[1]) / 2
+                parts.append(self._create_text(mid_x, mid_y - 8, f"{real_distance:.1f} м", 
+                                             fill=self.config.blue, font_size=self.config.font_size - 2, text_anchor="middle"))
+            
+            self.used_legend_tokens.add("geodir-determine")
+
+        # Создаем буферные зоны для точек и границ (как в CH)
+        point_bboxes = []
+        boundary_bboxes = []
+        
+        # Создаем буферы всех точек (используем локальные функции как в CH)
+        def get_point_bbox(x, y, radius_px):
+            """Создает bbox для точки с буферной зоной"""
+            buffer = 8.0  # буферная зона в пикселях
+            return (x - radius_px - buffer, y - radius_px - buffer, 
+                   x + radius_px + buffer, y + radius_px + buffer)
+        
+        def get_boundary_buffer_zones(polygon_points):
+            """Создает буферные зоны для всех границ полигона"""
+            buffer_zones = []
+            buffer = 8.0  # буферная зона в пикселях
+            for i in range(len(polygon_points)):
+                j = (i + 1) % len(polygon_points)
+                x1, y1 = polygon_points[i]
+                x2, y2 = polygon_points[j]
+                
+                # Создаем более точную буферную зону для сегмента границы
+                # Учитываем направление линии и создаем буфер перпендикулярно к ней
+                dx = x2 - x1
+                dy = y2 - y1
+                length = (dx*dx + dy*dy)**0.5
+                
+                if length > 0:
+                    # Нормализуем направление
+                    dx_norm = dx / length
+                    dy_norm = dy / length
+                    
+                    # Создаем перпендикулярное направление для буфера
+                    perp_x = -dy_norm * buffer
+                    perp_y = dx_norm * buffer
+                    
+                    # Создаем 4 угла буферной зоны
+                    corners = [
+                        (x1 + perp_x, y1 + perp_y),  # перпендикуляр от начала
+                        (x1 - perp_x, y1 - perp_y),  # перпендикуляр от начала (другая сторона)
+                        (x2 - perp_x, y2 - perp_y),  # перпендикуляр от конца
+                        (x2 + perp_x, y2 + perp_y)   # перпендикуляр от конца (другая сторона)
+                    ]
+                    
+                    # Находим границы буферной зоны
+                    min_x = min(corner[0] for corner in corners)
+                    min_y = min(corner[1] for corner in corners)
+                    max_x = max(corner[0] for corner in corners)
+                    max_y = max(corner[1] for corner in corners)
+                else:
+                    # Fallback для нулевой длины
+                    min_x = min(x1, x2) - buffer
+                    min_y = min(y1, y2) - buffer
+                    max_x = max(x1, x2) + buffer
+                    max_y = max(y1, y2) + buffer
+                
+                buffer_zones.append((min_x, min_y, max_x, max_y))
+            return buffer_zones
+        
+        # Создаем буферы всех точек
+        for i, (bp, (x, y)) in enumerate(zip(boundary_points, norm_pts)):
+            point_bbox = get_point_bbox(x, y, mm_to_px(POINT_DIAMETER_MM/2.0, self.config.dpi))
+            point_bboxes.append(point_bbox)
+        
+        # Создаем буферы всех границ
+        boundary_bboxes = get_boundary_buffer_zones(norm_pts)
+        
+        # Объединяем все буферы объектов (кроме подписей)
+        all_object_buffers = point_bboxes + boundary_bboxes
+
+        # Применяем полную систему размещения подписей точек из CH
+        # Подготавливаем данные точек для системы размещения
+        point_data = []
+        for i, (bp, (x, y)) in enumerate(zip(boundary_points, norm_pts)):
+            kind = str(bp.get('kind', 'EXISTING'))
+            
+            # Правильная нумерация: новые точки с префиксом "н", существующие без префикса
+            if kind in ('NEW', 'CREATED'):
+                status = PointStatus.NEW
+                color = self.config.red
+                lbl = f"н{i+1}"  # н1, н2, н3...
+                self.used_legend_tokens.add("point-new")
+                self.used_legend_tokens.add("label-point-new")
+            elif kind == 'REMOVED':
+                status = PointStatus.REMOVED
+                color = self.config.black
+                lbl = f"{i+1}"  # 1, 2, 3... (курсив+подчёркивание)
+                self.used_legend_tokens.add("point-removed")
+            else:
+                status = PointStatus.EXISTING
+                color = self.config.black
+                lbl = f"{i+1}"  # 1, 2, 3...
+                self.used_legend_tokens.add("point-existing")
+                self.used_legend_tokens.add("label-point-existing")
+            
+            point_data.append({
+                'x_abs': x,
+                'y_abs': y,
+                'x_rel': x,
+                'y_rel': y,
+                'label': lbl,
+                'color': color,
+                'status': status,
+                'radius_mm': POINT_DIAMETER_MM/2.0,
+                'radius_px': mm_to_px(POINT_DIAMETER_MM/2.0, self.config.dpi)
+            })
+        
+        # Обнаруживаем кластеры точек для веерного размещения
+        clusters = self._detect_point_clusters(point_data, cluster_radius=30)
+        
+        # Создаем карту углов для каждой точки
+        point_angles = {}
+        for cluster in clusters:
+            if len(cluster) > 1:  # Только для кластеров из нескольких точек
+                # Вычисляем базовый угол для кластера (от центра полигона)
+                cluster_center_x = sum(point_data[idx]['x_abs'] for idx in cluster) / len(cluster)
+                cluster_center_y = sum(point_data[idx]['y_abs'] for idx in cluster) / len(cluster)
+                
+                base_dx = cluster_center_x - cx_px
+                base_dy = cluster_center_y - cy_px
+                base_angle = math.atan2(base_dy, base_dx)
+                
+                # Получаем веерные углы для кластера
+                fan_angles = self._get_fan_angles(len(cluster), base_angle)
+                
+                # Присваиваем углы точкам в кластере
+                for i, point_idx in enumerate(cluster):
+                    point_angles[point_idx] = fan_angles[i]
+        
+        # Создаем все буферы для проверки пересечений
+        label_positions = []
+        font_size_px = self.config.font_size
+        
+        # Спиральный поиск позиций для всех точек
+        for i, pd in enumerate(point_data):
+            # Используем веерный угол если точка в кластере, иначе направление от центра
+            if i in point_angles:
+                # Используем предварительно вычисленный веерный угол
+                angle = point_angles[i]
+                dx_norm = math.cos(angle)
+                dy_norm = math.sin(angle)
+            else:
+                # Направление от центра наружу (для одиночных точек)
+                dx = pd['x_abs'] - cx_px
+                dy = pd['y_abs'] - cy_px
+                dist = (dx**2 + dy**2)**0.5
+                
+                if dist > 0.1:
+                    # Нормализуем направление
+                    dx_norm = dx / dist
+                    dy_norm = dy / dist
+                else:
+                    dx_norm, dy_norm = 1, 0  # Fallback направление
+            
+            # В SGP, как и в CH, подписи размещаются рядом с точками
+            # Используем простой алгоритм размещения рядом с точкой
+            base_offset = pd['radius_px'] + 4  # Минимальный отступ от точки
+            start_x = pd['x_rel'] + dx_norm * base_offset
+            start_y = pd['y_rel'] + dy_norm * base_offset
+            
+            # Простой поиск позиции рядом с точкой (как в CH)
+            label_x, label_y = self._find_position_near_point(
+                start_x, start_y, pd['label'], font_size_px,
+                all_object_buffers, label_positions, norm_pts
+            )
+            
+            # Создаем bbox для найденной позиции
+            def get_label_bbox(cx, cy, text, fs):
+                char_width = fs * 0.6
+                text_width = len(text) * char_width
+                text_height = fs
+                padding = 4
+                return (cx - text_width/2 - padding, cy - text_height/2 - padding, 
+                       cx + text_width/2 + padding, cy + text_height/2 + padding)
+            
+            bbox = get_label_bbox(label_x, label_y, pd['label'], font_size_px)
+            label_positions.append({'bbox': bbox, 'x': label_x, 'y': label_y})
+        
+        # Рисуем точки и подписи
+        for i, pd in enumerate(point_data):
+            # Рисуем точку
+            parts.append(self._create_circle(pd["x_rel"], pd["y_rel"], r=f"{pd['radius_mm']}mm", fill=pd["color"]))
+            
+            # Рисуем подпись
+            lp = label_positions[i]
+            
+            # В SGP, как и в CH, выноски НЕ РИСУЮТСЯ - подписи размещаются рядом с точками
+            
+            # Стиль подписи для прекращающих точек
+            if pd['status'] == PointStatus.REMOVED:
+                # Создаем текст с курсивом и подчёркиванием для прекращающих точек
+                parts.append(f'<text x="{lp["x"]}" y="{lp["y"]}" fill="{pd["color"]}" font-size="{font_size_px}" font-family="{self.config.font_family}" text-anchor="start" font-style="italic" text-decoration="underline">{pd["label"]}</text>')
+            else:
+                parts.append(self._create_text(lp['x'], lp['y'], pd['label'], fill=pd['color'], 
+                                             font_size=font_size_px, text_anchor="start"))
+
+        # Восстанавливаем исходные размеры
+        self.config.width = original_width
+        self.config.height = original_height
+
+        return "\n".join(parts)
     
     def generate_scheme_graphics(self, parcels: List[Dict[str, Any]], 
                                boundary_points: List[Dict[str, Any]]) -> str:
@@ -993,10 +1458,10 @@ class SVGGraphicsGenerator:
             svg_content.append(graphics)
             
         elif section_type == "SGP":
-            # Схема геодезических построений - направления и пункты
-            station_graphics = self.generate_stations_graphics(stations)
-            direction_graphics = self.generate_directions_graphics(directions, stations, boundary_points)
-            svg_content.extend([station_graphics, direction_graphics])
+            # Схема геодезических построений — без масштаба: пункты располагаются рядом
+            # с участком по реальному азимуту от центроида участка.
+            sgp_graphics = self.generate_sgp_graphics(parcels, stations, directions, boundary_points)
+            svg_content.append(sgp_graphics)
             
         elif section_type == "DRAWING":
             # Чертеж: только ЗУ и его характерные точки, без пунктов и направлений
