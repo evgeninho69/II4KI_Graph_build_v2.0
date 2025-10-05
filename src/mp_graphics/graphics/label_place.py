@@ -49,10 +49,10 @@ def place_label(anchor: Tuple[float, float], text: str, avoid_polylines: List[Li
             return ax, ay, None
     
     # Если центр занят или prefer_center=False, используем квадранты со сдвигом
-    dx_mm, dy_mm = 2.0, 2.0
+    dx_mm, dy_mm = 1.0, 1.0
     dx = mm_to_px(dx_mm, dpi)
     dy = mm_to_px(dy_mm, dpi)
-    min_leader_mm = 1.5
+    min_leader_mm = 0.8
     min_leader_px = mm_to_px(min_leader_mm, dpi)
 
     candidates = [

@@ -279,7 +279,7 @@ class SVGGraphicsGenerator:
         char_width = font_size * 0.6
         text_width = len(label_text) * char_width
         text_height = font_size
-        padding = 18
+        padding = 4
         
         def create_label_rect(cx, cy):
             """Создает прямоугольник-обертку с центром в (cx, cy)"""
@@ -310,14 +310,14 @@ class SVGGraphicsGenerator:
             
             # Проверка минимального расстояния до границы полигона
             min_dist = self._distance_to_polygon_edge(rect_center_x, rect_center_y, polygon_points_rel)
-            if min_dist < 20:  # Увеличиваем минимальное расстояние
+            if min_dist < 6:
                 return True
             
             return False
         
         # Спиральный поиск
         max_radius = 150  # Максимальный радиус поиска
-        step_size = 3     # Шаг спирали
+        step_size = 2
         
         for radius in range(0, max_radius, step_size):
             # Количество точек на окружности зависит от радиуса
@@ -594,7 +594,7 @@ class SVGGraphicsGenerator:
 
     def _place_label(self, x: float, y: float, text: str, fill: str, font_size: int = None, text_anchor: str = "start", extra_style: str = '') -> str:
         # Кандидаты смещений по квадрантам (мм)
-        offsets_mm = [(2.0, -2.0), (-2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]
+        offsets_mm = [(1.0, -1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
         chosen = None
         for (dx_mm, dy_mm) in offsets_mm:
             dx = mm_to_px(dx_mm, self.config.dpi)
@@ -610,7 +610,7 @@ class SVGGraphicsGenerator:
         else:
             dx, dy = chosen
         # Лидерная линия, если расстояние > 1.5 мм
-        need_leader = (dx * dx + dy * dy) ** 0.5 > mm_to_px(1.5, self.config.dpi)
+        need_leader = (dx * dx + dy * dy) ** 0.5 > mm_to_px(0.8, self.config.dpi)
         leader = ''
         if need_leader:
             leader = self._create_line(x, y, x + dx, y - dy, stroke=fill, stroke_width=f"{self.config.stroke_width}mm")
@@ -630,9 +630,9 @@ class SVGGraphicsGenerator:
         txt = label
         if status == PointStatus.NEW and not (label.startswith('н') or label.startswith('Н')):
             txt = f"н{label}"
-        # Смещение подписи на 1.5 мм вправо и 1.0 мм вверх
-        dx = mm_to_px(1.5, self.config.dpi)
-        dy = mm_to_px(1.0, self.config.dpi)
+        # Смещение подписи на 0.8 мм вправо и 0.8 мм вверх
+        dx = mm_to_px(0.8, self.config.dpi)
+        dy = mm_to_px(0.8, self.config.dpi)
         # Точка
         circle = self._create_circle(x, y, r=f"{radius_mm}mm", fill=color)
         # Текст (REMOVED — курсив и подчёркивание)
@@ -895,6 +895,77 @@ class SVGGraphicsGenerator:
         
         return "\n".join(svg_elements)
     
+    def generate_scheme_graphics(self, parcels: List[Dict[str, Any]], 
+                               boundary_points: List[Dict[str, Any]]) -> str:
+        """Генерирует схему расположения земельных участков (СРЗУ) согласно правилам"""
+        if not parcels or not boundary_points:
+            return ""
+        
+        # Извлекаем координаты границы
+        coords = []
+        for point in boundary_points:
+            coords.append((point['x'], point['y']))
+        
+        # Нормализуем координаты
+        normalized_coords, center, scale = self._normalize_coordinates(coords)
+        
+        svg_elements = []
+        
+        # Оставляем на схеме только основной участок
+        main_parcels = [p for p in parcels if p.get('is_main') or p.get('status') == 'NEW']
+        if not main_parcels and parcels:
+            main_parcels = [parcels[0]]
+
+        # Рисуем границы участка по сегментам с правильными цветами для СРЗУ
+        if main_parcels and len(normalized_coords) >= 3:
+            n = len(normalized_coords)
+            for i in range(n):
+                j = (i + 1) % n
+                x1, y1 = normalized_coords[i]
+                x2, y2 = normalized_coords[j]
+                
+                # Определяем статус сегмента по статусам конечных точек
+                k1 = str(boundary_points[i].get('kind', 'EXISTING'))
+                k2 = str(boundary_points[j].get('kind', 'EXISTING'))
+                
+                # Для СРЗУ: красные линии для новых границ, серые для существующих
+                if k1 in ('NEW', 'CREATED') or k2 in ('NEW', 'CREATED'):
+                    stroke = self.config.red  # Красный для новых границ
+                    legend_token = "target"
+                else:
+                    stroke = "#808080"  # Серый для существующих границ (смежники)
+                    legend_token = "adjacent"
+                
+                # Рисуем сегмент с увеличенной толщиной для схемы
+                line = self._create_line(x1, y1, x2, y2, stroke=stroke, stroke_width="2.5mm")
+                svg_elements.append(line)
+                self.used_legend_tokens.add(legend_token)
+        
+        # Рисуем упрощенные точки без детальных подписей (только для схемы)
+        for i, norm_coord in enumerate(normalized_coords):
+            x, y = norm_coord
+            # Простые точки без подписей для схемы
+            circle = self._create_circle(x, y, r="2mm", fill="#000000")
+            svg_elements.append(circle)
+        
+        # Добавляем подпись участка в центре
+        if main_parcels:
+            parcel = main_parcels[0]
+            label = ParcelLabelFormatter.build_parcel_label(parcel)
+            if label:
+                center_x = self.config.width / 2
+                center_y = self.config.height / 2
+                # Укорачиваем слишком длинные подписи для читаемости схемы
+                display_label = label
+                if len(display_label) > 20:
+                    display_label = (display_label.split('/')[-1]) if ('/' in display_label) else display_label[-20:]
+                parcel_label = self._create_text(center_x, center_y, display_label, 
+                                               fill=self.config.black, font_size=9, text_anchor="middle")
+                svg_elements.append(parcel_label)
+                self.used_legend_tokens.add("label-parcel")
+        
+        return "\n".join(svg_elements)
+
     def generate_complete_svg(self, cpp_data: Dict[str, Any], 
                             section_type: str = "DRAWING") -> str:
         """
@@ -917,27 +988,8 @@ class SVGGraphicsGenerator:
         
         # Добавляем графику в зависимости от типа раздела
         if section_type == "SCHEME":
-            # Схема расположения — оцениваем "плотность" точек и при сильной плотности не подписываем точки
-            # Простой критерий: средняя длина ребра < 3мм в текущем вью — отключаем подписи точек
-            skip_labels = False
-            try:
-                coords = [(p['x'], p['y']) for p in boundary_points]
-                norm, _, _ = self._normalize_coordinates(coords)
-                if len(norm) >= 2:
-                    segs = 0
-                    total = 0.0
-                    for i in range(len(norm)):
-                        x1, y1 = norm[i]
-                        x2, y2 = norm[(i+1) % len(norm)]
-                        d = ((x2 - x1)**2 + (y2 - y1)**2) ** 0.5
-                        total += d
-                        segs += 1
-                    avg = total / max(1, segs)
-                    if avg < mm_to_px(3.0, self.config.dpi):
-                        skip_labels = True
-            except Exception:
-                skip_labels = False
-            graphics = self.generate_parcel_graphics(parcels, boundary_points, skip_point_labels=skip_labels)
+            # Схема расположения — упрощенная схема с кварталом и смежниками
+            graphics = self.generate_scheme_graphics(parcels, boundary_points)
             svg_content.append(graphics)
             
         elif section_type == "SGP":
@@ -1089,7 +1141,7 @@ class SVGGraphicsGenerator:
                     text_height = font_size
                     
                     # Увеличиваем отступы для максимальной читаемости
-                    padding = 18  # Увеличиваем padding с 12 до 18
+                    padding = 6
                     return (
                         x - padding,
                         y - text_height - padding,
@@ -1101,7 +1153,7 @@ class SVGGraphicsGenerator:
                 def get_point_bbox(x, y, radius_px):
                     """Возвращает bbox точки с буфером: (x_min, y_min, x_max, y_max)"""
                     # Буфер вокруг точки = радиус + отступ
-                    buffer = radius_px + 30  # Увеличиваем буфер точки для максимального разделения
+                    buffer = radius_px + 6
                     return (
                         x - buffer,
                         y - buffer,
@@ -1114,7 +1166,7 @@ class SVGGraphicsGenerator:
                     """Создает буферные зоны вокруг всех границ полигона"""
                     buffer_zones = []
                     n = len(polygon_points)
-                    buffer_width = 25  # Увеличиваем буферную зону вокруг границы до максимума
+                    buffer_width = 8
                     
                     for i in range(n):
                         j = (i + 1) % n
@@ -1257,7 +1309,7 @@ class SVGGraphicsGenerator:
                             dx_norm, dy_norm = 1, 0  # Fallback направление
                     
                     # Начальная позиция для спирального поиска (относительные координаты)
-                    base_offset = pd['radius_px'] + 35  # Увеличиваем отступ от точки
+                    base_offset = pd['radius_px'] + 8
                     start_x = pd['x_rel'] + dx_norm * base_offset
                     start_y = pd['y_rel'] + dy_norm * base_offset
                     

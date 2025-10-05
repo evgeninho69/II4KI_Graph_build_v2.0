@@ -254,7 +254,7 @@ def parse_txt_boundary_points(
     return points
 
 
-def parse_cadastre_xml(path: str | Path, default_crs: Dict[str, Any] | None = None) -> SRZUData:
+def parse_cadastre_xml(path: str | Path, target_txt_path: str | Path | None = None, default_crs: Dict[str, Any] | None = None) -> SRZUData:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"XML не найден: {p}")
@@ -272,6 +272,28 @@ def parse_cadastre_xml(path: str | Path, default_crs: Dict[str, Any] | None = No
     admin_boundaries: List[Geometry] = []
     zones: List[Geometry] = []
     labels: List[Dict[str, Any]] = []
+
+    # Добавляем целевой участок из TXT файла, если указан
+    print(f"🔍 Проверка целевого TXT файла: {target_txt_path}")
+    if target_txt_path:
+        print(f"📁 Загружаем целевой участок из: {target_txt_path}")
+        target_coords = parse_txt_polygon(target_txt_path)
+        print(f"📊 Получено координат: {len(target_coords) if target_coords else 0}")
+        if target_coords:
+            target_parcels.append({
+                "type": "Polygon", 
+                "coordinates": [target_coords],
+                "properties": {
+                    "status": "TARGET", 
+                    "color": "#ff0000",
+                    "cad_number": "TARGET"
+                }
+            })
+            print(f"✅ Добавлен целевой участок из TXT: {len(target_coords)} точек")
+        else:
+            print("⚠️ Не удалось загрузить координаты из TXT файла")
+    else:
+        print("⚠️ Путь к целевому TXT файлу не указан")
 
     # Квартал: номер и сбор всех земельных участков как смежников
     quarter_num = root.findtext('./cadastral_blocks/cadastral_block/cadastral_number')

@@ -314,22 +314,41 @@ def render_srzu(data: SRZUData, cfg: SVGConfig) -> str | Tuple[str, Set[str]]:
                 parts.append(f'<polygon points="{pts_attr}" fill="none" stroke="{color}" stroke-width="0.2mm"/>')
         adjacent_drawn += 1
 
-    # TARGET parcels (приоритетный красный/чёрный по статусу)
+    # TARGET parcels - рисуем по сегментам с правильными цветами для СРЗУ
     target_drawn = 0
     for g in data.get("target_parcels", []) or []:
         if g.get("type") not in ("Polygon", "MultiPolygon"):
             continue
-        status = (g.get("properties", {}).get("status") or "NEW").upper()
-        stroke = "#ff0000" if status == "NEW" else "#000000"
+        
+        # Для СРЗУ рисуем границы по сегментам с разными цветами
+        # По умолчанию считаем все границы новыми (красными) для целевого участка
+        ring = None
         if g.get("type") == "Polygon":
             ring = (g.get("coordinates") or [[]])[0]
-            pts_attr = _poly_to_svg_points(ring, center, scale, cfg)
-            parts.append(f'<polygon points="{pts_attr}" fill="none" stroke="{stroke}" stroke-width="0.2mm"/>')
         else:
-            for poly in g.get("coordinates") or []:
-                ring = (poly or [[]])[0]
-                pts_attr = _poly_to_svg_points(ring, center, scale, cfg)
-                parts.append(f'<polygon points="{pts_attr}" fill="none" stroke="{stroke}" stroke-width="0.2mm"/>')
+            # MultiPolygon - берем первый полигон
+            ring = (g.get("coordinates") or [[]])[0][0] if g.get("coordinates") else []
+        
+        if ring and len(ring) >= 3:
+            # Рисуем каждый сегмент границы отдельно
+            for i in range(len(ring)):
+                j = (i + 1) % len(ring)
+                x1, y1 = ring[i]
+                x2, y2 = ring[j]
+                
+                # Преобразуем координаты в пиксели
+                px1, py1 = to_px_local(x1, y1)
+                px2, py2 = to_px_local(x2, y2)
+                
+                # Для целевого участка на СРЗУ: все границы красные (новые)
+                # В будущем здесь можно добавить логику определения статуса сегмента
+                stroke = "#ff0000"  # Красный для новых границ целевого участка
+                legend_token = "target"
+                
+                # Рисуем сегмент с правильной толщиной согласно правилам СРЗУ
+                parts.append(f'<line x1="{px1:.2f}" y1="{py1:.2f}" x2="{px2:.2f}" y2="{py2:.2f}" stroke="{stroke}" stroke-width="0.2mm"/>')
+                used_tokens.add(legend_token)
+        
         target_drawn += 1
 
     # LABELS: размещение с выносками и избеганием пересечений

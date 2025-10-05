@@ -62,17 +62,13 @@ def main(argv: List[str] | None = None) -> int:
     # При наличии SRZU‑XML — подмешиваем данные SRZU в общий пакет
     if args.srzu_xml:
         try:
-            srzu_data = parse_cadastre_xml(Path(args.srzu_xml))
-            # Если есть TXT с целевым участком — подмешиваем как target_parcels И boundary_points
+            # Передаем TXT путь напрямую в parse_cadastre_xml для добавления целевого участка
+            target_txt_path = None
             if args.srzu_txt:
-                # Для SRZU: добавляем как target_parcels
-                coords = parse_txt_polygon(Path(args.srzu_txt))
-                if coords:
-                    srzu_data.setdefault('target_parcels', []).append({
-                        'type': 'Polygon',
-                        'coordinates': [coords],
-                        'properties': {'status': 'NEW', 'designation': ':ЗУ'}
-                    })
+                target_txt_path = Path(args.srzu_txt)
+            srzu_data = parse_cadastre_xml(Path(args.srzu_xml), target_txt_path)
+            # Если есть TXT с целевым участком — подмешиваем как boundary_points для чертежа
+            if args.srzu_txt:
                 
                 # Для чертежа: добавляем как boundary_points
                 boundary_points = parse_txt_boundary_points(Path(args.srzu_txt))
